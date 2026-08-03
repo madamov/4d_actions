@@ -1,0 +1,203 @@
+name: Resolve tool4d download
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "4D version, for example: 21.1, 20.8, or 20.8 HF3"
+        required: true
+        type: string
+
+      runner:
+        description: "Runner on which tool4d will be used"
+        required: false
+        type: string
+        default: "macos-latest"
+
+      versions-file:
+        description: "Path to the JSON file containing available versions"
+        required: false
+        type: string
+        default: ".github/tool4d-versions.json"
+
+    outputs:
+      url:
+        description: "Resolved tool4d download URL"
+        value: ${{ jobs.resolve.outputs.url }}
+
+      build:
+        description: "Selected build number or hotfix"
+        value: ${{ jobs.resolve.outputs.build }}
+
+      os:
+        description: "Resolved 4D operating-system identifier"
+        value: ${{ jobs.resolve.outputs.os }}
+
+      target:
+        description: "Resolved 4D architecture identifier"
+        value: ${{ jobs.resolve.outputs.target }}
+
+jobs:
+  resolve:
+    name: Resolve tool4d URL
+    runs-on: ${{ inputs.runner }}
+
+    outputs:
+      url: ${{ steps.resolve.outputs.url }}
+      build: ${{ steps.resolve.outputs.build }}
+      os: ${{ steps.resolve.outputs.os }}
+      target: ${{ steps.resolve.outputs.target }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve platform, build and URL
+        id: resolve
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          VERSIONS_FILE: ${{ inputs.versions-file }}
+          RUNNER_OS_VALUE: ${{ runner.os }}
+          RUNNER_ARCH_VALUE: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+
+          echo "Requested version : $REQUESTED_VERSION"
+          echo "Runner OS         : $RUNNER_OS_VALUE"
+          echo "Runner architecture: $RUNNER_ARCH_VALUE"
+
+          if [[ ! -f "$VERSIONS_FILE" ]]; then
+            echo "::error::Versions file does not exist: $VERSIONS_FILE"
+            exit 1
+          fi
+
+          case "$RUNNER_OS_VALUE" in
+            macOS)
+              TOOL4D_OS="mac"
+
+              case "$RUNNER_ARCH_VALUE" in
+                ARM64)
+                  TOOL4D_TARGET="arm64"
+                  TOOL4D_ARCHIVE="tool4d_arm64.tar.xz"
+                  ;;
+                X64)
+                  TOOL4D_TARGET="x86_64"
+                  TOOL4D_ARCHIVE="tool4d_x86_64.tar.xz"
+                  ;;
+                *)
+                  echo "::error::Unsupported macOS architecture: $RUNNER_ARCH_VALUE"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            Windows)
+              TOOL4D_OS="win"
+              TOOL4D_TARGET="x86_64"
+              TOOL4D_ARCHIVE="tool4d_win.tar.xz"
+              ;;
+
+            *)
+              echo "::error::Unsupported operating system: $RUNNER_OS_VALUE"
+              echo "::error::Only Windows and macOS are supported."
+              exit 1
+              ;;
+          esac
+
+          # Select all matching entries, sort numeric builds numerically,
+          # and take the entry with the highest build number.
+          #
+          # Non-numeric builds such as "hotfix" receive a sorting value of -1.
+          SELECTED_ENTRY="$(
+            jq -c \
+              --arg version "$REQUESTED_VERSION" \
+              --arg os "$TOOL4D_OS" \
+              --arg target "$TOOL4D_TARGET" \
+              '
+              [
+                .[]
+                | select(
+                    .version == $version
+                    and .os == $os
+                    and .target == $target
+                  )
+                | . + {
+                    "_build_sort":
+                      if (.build | test("^[0-9]+$"))
+                      then (.build | tonumber)
+                      else -1
+                      end
+                  }
+              ]
+              | sort_by(._build_sort)
+              | last
+              | if . == null then null else del(._build_sort) end
+              ' \
+              "$VERSIONS_FILE"
+          )"
+
+          if [[ "$SELECTED_ENTRY" == "null" || -z "$SELECTED_ENTRY" ]]; then
+            echo "::error::No matching tool4d version was found."
+            echo "::error::Version: $REQUESTED_VERSION"
+            echo "::error::OS: $TOOL4D_OS"
+            echo "::error::Target: $TOOL4D_TARGET"
+
+            echo "Available matching version entries:"
+            jq \
+              --arg version "$REQUESTED_VERSION" \
+              '[.[] | select(.version == $version)]' \
+              "$VERSIONS_FILE"
+
+            exit 1
+          fi
+
+          BUILD="$(jq -r '.build' <<< "$SELECTED_ENTRY")"
+
+          # Extract the major number from versions such as:
+          #   21.1
+          #   20.8
+          #   20.8 HF3
+          if [[ "$REQUESTED_VERSION" =~ ^([0-9]+)\. ]]; then
+            MAJOR_VERSION="${BASH_REMATCH[1]}"
+          else
+            echo "::error::Invalid version format: $REQUESTED_VERSION"
+            exit 1
+          fi
+
+          VERSION_PATH="${REQUESTED_VERSION// /%20}"
+
+          URL="https://product-download.4d.com/release/${MAJOR_VERSION}.x/${VERSION_PATH}/${BUILD}/${TOOL4D_OS}/${TOOL4D_ARCHIVE}"
+
+          echo "Selected entry:"
+          jq . <<< "$SELECTED_ENTRY"
+
+          echo "Resolved URL:"
+          echo "$URL"
+
+          {
+            echo "url=$URL"
+            echo "build=$BUILD"
+            echo "os=$TOOL4D_OS"
+            echo "target=$TOOL4D_TARGET"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Add result to job summary
+        shell: bash
+        env:
+          URL: ${{ steps.resolve.outputs.url }}
+          BUILD: ${{ steps.resolve.outputs.build }}
+          TOOL4D_OS: ${{ steps.resolve.outputs.os }}
+          TOOL4D_TARGET: ${{ steps.resolve.outputs.target }}
+        run: |
+          {
+            echo "## tool4d download"
+            echo
+            echo "| Property | Value |"
+            echo "|---|---|"
+            echo "| Version | \`${{ inputs.version }}\` |"
+            echo "| Build | \`$BUILD\` |"
+            echo "| OS | \`$TOOL4D_OS\` |"
+            echo "| Target | \`$TOOL4D_TARGET\` |"
+            echo "| URL | $URL |"
+          } >> "$GITHUB_STEP_SUMMARY"
