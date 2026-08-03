@@ -1,0 +1,328 @@
+name: Check 4D project syntax
+
+on:
+  workflow_call:
+    inputs:
+      startup_method:
+        description: "4D startup method used to check syntax"
+        required: true
+        type: string
+
+      user_parameters:
+        description: "JSON passed to tool4d through --user-param"
+        required: true
+        type: string
+
+      runner:
+        description: "Runner used to execute tool4d"
+        required: false
+        type: string
+        default: "macos-latest"
+
+permissions:
+  contents: read
+
+jobs:
+  check-syntax:
+    name: Check 4D project syntax
+    runs-on: ${{ inputs.runner }}
+
+    steps:
+      - name: Checkout calling repository
+        uses: actions/checkout@v4
+
+      - name: Locate 4D project and determine tool4d cache key
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            WORKSPACE_SEARCH_PATH="$(cygpath -u "$GITHUB_WORKSPACE")"
+          else
+            WORKSPACE_SEARCH_PATH="$GITHUB_WORKSPACE"
+          fi
+
+          mapfile -t PROJECT_FILES < <(
+            find "$WORKSPACE_SEARCH_PATH" \
+              -type f \
+              -iname "*.4DProject" \
+              -not -path "*/.git/*" \
+              -print
+          )
+
+          PROJECT_COUNT="${#PROJECT_FILES[@]}"
+
+          if [[ "$PROJECT_COUNT" -eq 0 ]]; then
+            echo "::error::No .4DProject file was found in the calling repository."
+            exit 1
+          fi
+
+          if [[ "$PROJECT_COUNT" -gt 1 ]]; then
+            echo "::error::More than one .4DProject file was found:"
+            printf '  %s\n' "${PROJECT_FILES[@]}"
+            exit 1
+          fi
+
+          PROJECT_FILE_UNIX="${PROJECT_FILES[0]}"
+
+          COMPATIBILITY_VERSION="$(
+            jq -er '.compatibilityVersion' "$PROJECT_FILE_UNIX"
+          )"
+
+          if ! [[ "$COMPATIBILITY_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "::error::compatibilityVersion must be numeric."
+            echo "::error::Found: $COMPATIBILITY_VERSION"
+            exit 1
+          fi
+
+          if [[ "$COMPATIBILITY_VERSION" -lt 100 ]]; then
+            echo "::error::Unexpected compatibilityVersion: $COMPATIBILITY_VERSION"
+            exit 1
+          fi
+
+          VERSION_MAJOR=$((COMPATIBILITY_VERSION / 100))
+          VERSION_MINOR=$((COMPATIBILITY_VERSION % 100))
+          TOOL4D_VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
+
+          case "$RUNNER_OS" in
+            macOS)
+              TOOL4D_OS="mac"
+
+              case "$RUNNER_ARCH" in
+                ARM64)
+                  TOOL4D_TARGET="arm64"
+                  ;;
+                X64)
+                  TOOL4D_TARGET="x86_64"
+                  ;;
+                *)
+                  echo "::error::Unsupported macOS architecture: $RUNNER_ARCH"
+                  exit 1
+                  ;;
+              esac
+              ;;
+
+            Windows)
+              TOOL4D_OS="win"
+              TOOL4D_TARGET="x86_64"
+              ;;
+
+            *)
+              echo "::error::Unsupported runner OS: $RUNNER_OS"
+              exit 1
+              ;;
+          esac
+
+          CACHE_KEY="tool4d-${TOOL4D_VERSION}-${TOOL4D_OS}-${TOOL4D_TARGET}"
+          INSTALL_PATH="${RUNNER_TOOL_CACHE}/${CACHE_KEY}"
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PROJECT_FILE="$(cygpath -w "$PROJECT_FILE_UNIX")"
+          else
+            PROJECT_FILE="$PROJECT_FILE_UNIX"
+          fi
+
+          echo "4D project          : $PROJECT_FILE"
+          echo "compatibilityVersion: $COMPATIBILITY_VERSION"
+          echo "tool4d version      : $TOOL4D_VERSION"
+          echo "Cache key           : $CACHE_KEY"
+          echo "Install path        : $INSTALL_PATH"
+
+          {
+            echo "project_file=$PROJECT_FILE"
+            echo "compatibility_version=$COMPATIBILITY_VERSION"
+            echo "tool4d_version=$TOOL4D_VERSION"
+            echo "cache_key=$CACHE_KEY"
+            echo "install_path=$INSTALL_PATH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Restore tool4d cache
+        id: tool4d-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.resolve.outputs.install_path }}
+          key: ${{ steps.resolve.outputs.cache_key }}
+          fail-on-cache-miss: true
+
+      - name: Locate tool4d executable
+        id: tool4d
+        shell: bash
+        env:
+          INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            SEARCH_PATH="$(cygpath -u "$INSTALL_PATH")"
+          else
+            SEARCH_PATH="$INSTALL_PATH"
+          fi
+
+          if [[ ! -d "$SEARCH_PATH" ]]; then
+            echo "::error::Restored tool4d directory does not exist:"
+            echo "::error::$INSTALL_PATH"
+            exit 1
+          fi
+
+          case "$RUNNER_OS" in
+            macOS)
+              TOOL4D_EXECUTABLE="$(
+                find "$SEARCH_PATH" \
+                  -type f \
+                  -path "*/tool4d.app/Contents/MacOS/tool4d" \
+                  -print \
+                  -quit
+              )"
+
+              if [[ -z "$TOOL4D_EXECUTABLE" ]]; then
+                TOOL4D_EXECUTABLE="$(
+                  find "$SEARCH_PATH" \
+                    -type f \
+                    -name "tool4d" \
+                    -print \
+                    -quit
+                )"
+              fi
+              ;;
+
+            Windows)
+              TOOL4D_EXECUTABLE_UNIX="$(
+                find "$SEARCH_PATH" \
+                  -type f \
+                  -iname "tool4d.exe" \
+                  -print \
+                  -quit
+              )"
+
+              if [[ -n "$TOOL4D_EXECUTABLE_UNIX" ]]; then
+                TOOL4D_EXECUTABLE="$(
+                  cygpath -w "$TOOL4D_EXECUTABLE_UNIX"
+                )"
+              else
+                TOOL4D_EXECUTABLE=""
+              fi
+              ;;
+          esac
+
+          if [[ -z "$TOOL4D_EXECUTABLE" ]]; then
+            echo "::error::tool4d executable was not found in:"
+            echo "::error::$INSTALL_PATH"
+            exit 1
+          fi
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            chmod +x "$TOOL4D_EXECUTABLE"
+          fi
+
+          echo "tool4d executable: $TOOL4D_EXECUTABLE"
+
+          echo "executable=$TOOL4D_EXECUTABLE" >> "$GITHUB_OUTPUT"
+
+      - name: Validate user parameters
+        shell: bash
+        env:
+          USER_PARAMETERS: ${{ inputs.user_parameters }}
+        run: |
+          set -euo pipefail
+
+          if ! jq -e . >/dev/null 2>&1 <<< "$USER_PARAMETERS"; then
+            echo "::error::user_parameters is not valid JSON."
+            exit 1
+          fi
+
+          echo "User parameters:"
+          jq . <<< "$USER_PARAMETERS"
+
+      - name: Check 4D project syntax
+        shell: bash
+        env:
+          TOOL4D_EXECUTABLE: ${{ steps.tool4d.outputs.executable }}
+          PROJECT_FILE: ${{ steps.resolve.outputs.project_file }}
+          STARTUP_METHOD: ${{ inputs.startup_method }}
+          USER_PARAMETERS: ${{ inputs.user_parameters }}
+        run: |
+          set -euo pipefail
+
+           if [[ "$RUNNER_OS" == "Windows" ]]; then
+             DOCUMENTS_PATH="$USERPROFILE\\Documents"
+             WORKSPACE_PATH="$GITHUB_WORKSPACE"
+           else
+             DOCUMENTS_PATH="$HOME/Documents"
+             WORKSPACE_PATH="$GITHUB_WORKSPACE"
+           fi
+           
+           USER_PARAMETERS="$(
+             jq -c \
+               --arg documents "$DOCUMENTS_PATH" \
+               --arg workspace "$WORKSPACE_PATH" \
+               '
+               walk(
+                 if type == "string"
+                 then
+                   gsub("__DOCUMENTS__"; $documents)
+                   | gsub("__WORKSPACE__"; $workspace)
+                 else .
+                 end
+               )
+               ' <<< "$USER_PARAMETERS"
+           )"
+
+           ERROR_FOLDER_PATH="$(
+             jq -er '.errorFolderPath // empty' <<< "$USER_PARAMETERS"
+           )"
+           
+           if [[ -n "$ERROR_FOLDER_PATH" ]]; then
+             echo "Error folder: $ERROR_FOLDER_PATH"
+           
+             mkdir -p "$ERROR_FOLDER_PATH"
+           
+             if [[ ! -d "$ERROR_FOLDER_PATH" ]]; then
+               echo "::error::Unable to create error folder:"
+               echo "::error::$ERROR_FOLDER_PATH"
+               exit 1
+             fi
+           fi
+
+          echo "Project        : $PROJECT_FILE"
+          echo "Startup method : $STARTUP_METHOD"
+          echo "User parameters:"
+          jq . <<< "$USER_PARAMETERS"
+
+          COMMAND=(
+            "$TOOL4D_EXECUTABLE"
+            -p "$PROJECT_FILE"
+            --skip-onstartup
+            "--startup-method=$STARTUP_METHOD"
+            --dataless
+            "--user-param=$USER_PARAMETERS"
+          )
+
+          printf 'Command:'
+          printf ' %q' "${COMMAND[@]}"
+          printf '\n'
+
+          "${COMMAND[@]}"
+
+      - name: Add result to job summary
+        if: always()
+        shell: bash
+        env:
+          PROJECT_FILE: ${{ steps.resolve.outputs.project_file }}
+          TOOL4D_VERSION: ${{ steps.resolve.outputs.tool4d_version }}
+          COMPATIBILITY_VERSION: ${{ steps.resolve.outputs.compatibility_version }}
+          CACHE_KEY: ${{ steps.resolve.outputs.cache_key }}
+          STARTUP_METHOD: ${{ inputs.startup_method }}
+        run: |
+          {
+            echo "## 4D syntax check"
+            echo
+            echo "| Property | Value |"
+            echo "|---|---|"
+            echo "| Project | \`$PROJECT_FILE\` |"
+            echo "| compatibilityVersion | \`$COMPATIBILITY_VERSION\` |"
+            echo "| tool4d version | \`$TOOL4D_VERSION\` |"
+            echo "| Startup method | \`$STARTUP_METHOD\` |"
+            echo "| Cache key | \`$CACHE_KEY\` |"
+            echo "| Result | \`${{ job.status }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
