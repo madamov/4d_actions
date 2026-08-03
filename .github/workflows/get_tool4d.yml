@@ -272,16 +272,17 @@ jobs:
           ARCHIVE_NAME: ${{ steps.resolve.outputs.archive }}
         run: |
           set -euo pipefail
-
+      
           DOWNLOAD_DIRECTORY="$RUNNER_TEMP/tool4d-download"
           ARCHIVE_PATH="$DOWNLOAD_DIRECTORY/$ARCHIVE_NAME"
-
+          HEADERS_PATH="$DOWNLOAD_DIRECTORY/headers.txt"
+      
           rm -rf "$DOWNLOAD_DIRECTORY"
           mkdir -p "$DOWNLOAD_DIRECTORY"
-
+      
           echo "Downloading:"
           echo "$DOWNLOAD_URL"
-
+      
           curl \
             --fail \
             --location \
@@ -289,17 +290,28 @@ jobs:
             --silent \
             --retry 3 \
             --retry-delay 5 \
+            --dump-header "$HEADERS_PATH" \
             --output "$ARCHIVE_PATH" \
             "$DOWNLOAD_URL"
-
+      
           if [[ ! -s "$ARCHIVE_PATH" ]]; then
             echo "::error::Downloaded archive is missing or empty: $ARCHIVE_PATH"
             exit 1
           fi
-
-          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
-
+      
+          echo "Downloaded file:"
           ls -lh "$ARCHIVE_PATH"
+      
+          echo "Response headers:"
+          cat "$HEADERS_PATH"
+      
+          echo "Detected file type:"
+          file "$ARCHIVE_PATH" || true
+      
+          echo "First 32 bytes:"
+          od -An -tx1 -N32 "$ARCHIVE_PATH" || true
+      
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Extract tool4d archive
         if: steps.cache.outputs.cache-hit != 'true'
@@ -324,11 +336,11 @@ jobs:
           rm -rf "$INSTALL_PATH_UNIX"
           mkdir -p "$INSTALL_PATH_UNIX"
       
-          tar -xJf "$ARCHIVE_PATH_UNIX" -C "$INSTALL_PATH_UNIX"
+          tar -xf "$ARCHIVE_PATH_UNIX" -C "$INSTALL_PATH_UNIX"
       
           echo "Extracted files:"
           find "$INSTALL_PATH_UNIX" -maxdepth 4 -print
-    
+
       - name: Locate tool4d executable
         id: locate
         shell: bash
