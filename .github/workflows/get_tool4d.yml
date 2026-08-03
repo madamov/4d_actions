@@ -309,15 +309,26 @@ jobs:
           INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
         run: |
           set -euo pipefail
-
-          rm -rf "$INSTALL_PATH"
-          mkdir -p "$INSTALL_PATH"
-
-          tar -xJf "$ARCHIVE_PATH" -C "$INSTALL_PATH"
-
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE_PATH_UNIX="$(cygpath -u "$ARCHIVE_PATH")"
+            INSTALL_PATH_UNIX="$(cygpath -u "$INSTALL_PATH")"
+          else
+            ARCHIVE_PATH_UNIX="$ARCHIVE_PATH"
+            INSTALL_PATH_UNIX="$INSTALL_PATH"
+          fi
+      
+          echo "Archive path : $ARCHIVE_PATH_UNIX"
+          echo "Install path : $INSTALL_PATH_UNIX"
+      
+          rm -rf "$INSTALL_PATH_UNIX"
+          mkdir -p "$INSTALL_PATH_UNIX"
+      
+          tar -xJf "$ARCHIVE_PATH_UNIX" -C "$INSTALL_PATH_UNIX"
+      
           echo "Extracted files:"
-          find "$INSTALL_PATH" -maxdepth 4 -print
-
+          find "$INSTALL_PATH_UNIX" -maxdepth 4 -print
+    
       - name: Locate tool4d executable
         id: locate
         shell: bash
@@ -325,55 +336,70 @@ jobs:
           INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
         run: |
           set -euo pipefail
-
-          if [[ ! -d "$INSTALL_PATH" ]]; then
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            SEARCH_PATH="$(cygpath -u "$INSTALL_PATH")"
+          else
+            SEARCH_PATH="$INSTALL_PATH"
+          fi
+      
+          if [[ ! -d "$SEARCH_PATH" ]]; then
             echo "::error::tool4d installation directory does not exist: $INSTALL_PATH"
             exit 1
           fi
-
+      
           case "$RUNNER_OS" in
             macOS)
               TOOL4D_EXECUTABLE="$(
-                find "$INSTALL_PATH" \
+                find "$SEARCH_PATH" \
                   -type f \
                   -name "tool4d" \
                   -print \
                   -quit
               )"
               ;;
-
+      
             Windows)
-              TOOL4D_EXECUTABLE="$(
-                find "$INSTALL_PATH" \
+              TOOL4D_EXECUTABLE_UNIX="$(
+                find "$SEARCH_PATH" \
                   -type f \
                   -iname "tool4d.exe" \
                   -print \
                   -quit
               )"
+      
+              if [[ -n "$TOOL4D_EXECUTABLE_UNIX" ]]; then
+                TOOL4D_EXECUTABLE="$(cygpath -w "$TOOL4D_EXECUTABLE_UNIX")"
+              else
+                TOOL4D_EXECUTABLE=""
+              fi
               ;;
-
+      
             *)
               echo "::error::Unsupported runner OS: $RUNNER_OS"
               exit 1
               ;;
           esac
-
+      
           if [[ -z "$TOOL4D_EXECUTABLE" ]]; then
             echo "::error::tool4d executable was not found in: $INSTALL_PATH"
             exit 1
           fi
-
-          chmod +x "$TOOL4D_EXECUTABLE" 2>/dev/null || true
-
-          TOOL4D_DIRECTORY="$(dirname "$TOOL4D_EXECUTABLE")"
-
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            TOOL4D_DIRECTORY="$(dirname "$(cygpath -u "$TOOL4D_EXECUTABLE")")"
+            TOOL4D_DIRECTORY="$(cygpath -w "$TOOL4D_DIRECTORY")"
+          else
+            chmod +x "$TOOL4D_EXECUTABLE"
+            TOOL4D_DIRECTORY="$(dirname "$TOOL4D_EXECUTABLE")"
+          fi
+      
           echo "executable=$TOOL4D_EXECUTABLE" >> "$GITHUB_OUTPUT"
           echo "TOOL4D_HOME=$INSTALL_PATH" >> "$GITHUB_ENV"
           echo "TOOL4D_EXECUTABLE=$TOOL4D_EXECUTABLE" >> "$GITHUB_ENV"
           echo "$TOOL4D_DIRECTORY" >> "$GITHUB_PATH"
-
-          echo "Cache hit         : ${{ steps.cache.outputs.cache-hit }}"
-          echo "tool4d executable : $TOOL4D_EXECUTABLE"
+      
+          echo "tool4d executable: $TOOL4D_EXECUTABLE"
 
       - name: Add result to job summary
         shell: bash
