@@ -235,10 +235,10 @@ jobs:
               sed -E 's/[^a-z0-9._-]+/-/g'
           )"
 
-          CACHE_KEY="tool4d-${SAFE_VERSION}-${BUILD}-${TOOL4D_OS}-${TOOL4D_TARGET}"
+          CACHE_KEY="tool4d-${SAFE_VERSION}-${TOOL4D_OS}-${TOOL4D_TARGET}"
 
-          INSTALL_PATH="${RUNNER_TOOL_CACHE}/tool4d/${SAFE_VERSION}/${BUILD}/${TOOL4D_OS}-${TOOL4D_TARGET}"
-
+          INSTALL_PATH="${RUNNER_TOOL_CACHE}/${CACHE_KEY}"
+          
           echo "Selected entry:"
           jq . <<< "$SELECTED_ENTRY"
 
