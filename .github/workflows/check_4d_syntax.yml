@@ -43,13 +43,17 @@ jobs:
             WORKSPACE_SEARCH_PATH="$GITHUB_WORKSPACE"
           fi
 
-          mapfile -t PROJECT_FILES < <(
-            find "$WORKSPACE_SEARCH_PATH" \
-              -type f \
-              -iname "*.4DProject" \
-              -not -path "*/.git/*" \
-              -print
-          )
+           PROJECT_FILES=()
+           
+           while IFS= read -r project_file; do
+             PROJECT_FILES+=("$project_file")
+           done < <(
+             find "$WORKSPACE_SEARCH_PATH" \
+               -type f \
+               -iname "*.4DProject" \
+               -not -path "*/.git/*" \
+               -print
+           )
 
           PROJECT_COUNT="${#PROJECT_FILES[@]}"
 
