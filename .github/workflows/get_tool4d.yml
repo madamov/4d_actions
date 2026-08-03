@@ -14,12 +14,6 @@ on:
         type: string
         default: "macos-latest"
 
-      versions_file:
-        description: "Path to the JSON file containing available versions"
-        required: false
-        type: string
-        default: ".github/tool4d-versions.json"
-
     outputs:
       url:
         description: "Resolved tool4d download URL"
@@ -52,7 +46,7 @@ on:
       executable:
         description: "Full path to the tool4d executable"
         value: ${{ jobs.download.outputs.executable }}
-        
+
 jobs:
   download:
     name: Download tool4d ${{ inputs.version }}
@@ -69,28 +63,78 @@ jobs:
       executable: ${{ steps.locate.outputs.executable }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Resolve platform, build and URL
         id: resolve
         shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
-          VERSIONS_FILE: ${{ inputs.versions_file }}
           RUNNER_OS_VALUE: ${{ runner.os }}
           RUNNER_ARCH_VALUE: ${{ runner.arch }}
+
+          VERSIONS_JSON: |
+            [
+              {
+                "version": "20.8",
+                "build": "101985",
+                "os": "mac",
+                "target": "arm64"
+              },
+              {
+                "version": "20.8",
+                "build": "101985",
+                "os": "mac",
+                "target": "x86_64"
+              },
+              {
+                "version": "20.8",
+                "build": "101985",
+                "os": "win",
+                "target": "x86_64"
+              },
+              {
+                "version": "21.1",
+                "build": "100468",
+                "os": "win",
+                "target": "x86_64"
+              },
+              {
+                "version": "21.1",
+                "build": "100468",
+                "os": "mac",
+                "target": "x86_64"
+              },
+              {
+                "version": "21.1",
+                "build": "100468",
+                "os": "mac",
+                "target": "arm64"
+              },
+              {
+                "version": "20.8 HF3",
+                "build": "hotfix",
+                "os": "mac",
+                "target": "arm64"
+              },
+              {
+                "version": "20.8 HF3",
+                "build": "hotfix",
+                "os": "mac",
+                "target": "x86_64"
+              },
+              {
+                "version": "20.8 HF3",
+                "build": "hotfix",
+                "os": "win",
+                "target": "x86_64"
+              }
+            ]
+
         run: |
           set -euo pipefail
 
-          echo "Requested version : $REQUESTED_VERSION"
-          echo "Runner OS         : $RUNNER_OS_VALUE"
-          echo "Runner architecture: $RUNNER_ARCH_VALUE"
-
-          if [[ ! -f "$VERSIONS_FILE" ]]; then
-            echo "::error::Versions file does not exist: $VERSIONS_FILE"
-            exit 1
-          fi
+          echo "Requested version   : $REQUESTED_VERSION"
+          echo "Runner OS           : $RUNNER_OS_VALUE"
+          echo "Runner architecture : $RUNNER_ARCH_VALUE"
 
           case "$RUNNER_OS_VALUE" in
             macOS)
@@ -101,10 +145,12 @@ jobs:
                   TOOL4D_TARGET="arm64"
                   TOOL4D_ARCHIVE="tool4d_arm64.tar.xz"
                   ;;
+
                 X64)
                   TOOL4D_TARGET="x86_64"
                   TOOL4D_ARCHIVE="tool4d_x86_64.tar.xz"
                   ;;
+
                 *)
                   echo "::error::Unsupported macOS architecture: $RUNNER_ARCH_VALUE"
                   exit 1
@@ -125,10 +171,6 @@ jobs:
               ;;
           esac
 
-          # Select all matching entries, sort numeric builds numerically,
-          # and take the entry with the highest build number.
-          #
-          # Non-numeric builds such as "hotfix" receive a sorting value of -1.
           SELECTED_ENTRY="$(
             jq -c \
               --arg version "$REQUESTED_VERSION" \
@@ -152,9 +194,11 @@ jobs:
               ]
               | sort_by(._build_sort)
               | last
-              | if . == null then null else del(._build_sort) end
-              ' \
-              "$VERSIONS_FILE"
+              | if . == null
+                then null
+                else del(._build_sort)
+                end
+              ' <<< "$VERSIONS_JSON"
           )"
 
           if [[ "$SELECTED_ENTRY" == "null" || -z "$SELECTED_ENTRY" ]]; then
@@ -163,21 +207,17 @@ jobs:
             echo "::error::OS: $TOOL4D_OS"
             echo "::error::Target: $TOOL4D_TARGET"
 
-            echo "Available matching version entries:"
-            jq \
-              --arg version "$REQUESTED_VERSION" \
-              '[.[] | select(.version == $version)]' \
-              "$VERSIONS_FILE"
+            echo "Available versions:"
+
+            jq -r \
+              '.[].version' <<< "$VERSIONS_JSON" |
+              sort -u
 
             exit 1
           fi
 
           BUILD="$(jq -r '.build' <<< "$SELECTED_ENTRY")"
 
-          # Extract the major number from versions such as:
-          #   21.1
-          #   20.8
-          #   20.8 HF3
           if [[ "$REQUESTED_VERSION" =~ ^([0-9]+)\. ]]; then
             MAJOR_VERSION="${BASH_REMATCH[1]}"
           else
@@ -189,18 +229,151 @@ jobs:
 
           URL="https://product-download.4d.com/release/${MAJOR_VERSION}.x/${VERSION_PATH}/${BUILD}/${TOOL4D_OS}/${TOOL4D_ARCHIVE}"
 
+          SAFE_VERSION="$(
+            printf '%s' "$REQUESTED_VERSION" |
+              tr '[:upper:]' '[:lower:]' |
+              sed -E 's/[^a-z0-9._-]+/-/g'
+          )"
+
+          CACHE_KEY="tool4d-${SAFE_VERSION}-${BUILD}-${TOOL4D_OS}-${TOOL4D_TARGET}"
+
+          INSTALL_PATH="${RUNNER_TOOL_CACHE}/tool4d/${SAFE_VERSION}/${BUILD}/${TOOL4D_OS}-${TOOL4D_TARGET}"
+
           echo "Selected entry:"
           jq . <<< "$SELECTED_ENTRY"
 
-          echo "Resolved URL:"
-          echo "$URL"
+          echo "Resolved URL : $URL"
+          echo "Cache key    : $CACHE_KEY"
+          echo "Install path : $INSTALL_PATH"
 
           {
             echo "url=$URL"
             echo "build=$BUILD"
             echo "os=$TOOL4D_OS"
             echo "target=$TOOL4D_TARGET"
+            echo "archive=$TOOL4D_ARCHIVE"
+            echo "cache_key=$CACHE_KEY"
+            echo "install_path=$INSTALL_PATH"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Restore tool4d cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.resolve.outputs.install_path }}
+          key: ${{ steps.resolve.outputs.cache_key }}
+
+      - name: Download tool4d archive
+        if: steps.cache.outputs.cache-hit != 'true'
+        id: download
+        shell: bash
+        env:
+          DOWNLOAD_URL: ${{ steps.resolve.outputs.url }}
+          ARCHIVE_NAME: ${{ steps.resolve.outputs.archive }}
+        run: |
+          set -euo pipefail
+
+          DOWNLOAD_DIRECTORY="$RUNNER_TEMP/tool4d-download"
+          ARCHIVE_PATH="$DOWNLOAD_DIRECTORY/$ARCHIVE_NAME"
+
+          rm -rf "$DOWNLOAD_DIRECTORY"
+          mkdir -p "$DOWNLOAD_DIRECTORY"
+
+          echo "Downloading:"
+          echo "$DOWNLOAD_URL"
+
+          curl \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --retry 3 \
+            --retry-delay 5 \
+            --output "$ARCHIVE_PATH" \
+            "$DOWNLOAD_URL"
+
+          if [[ ! -s "$ARCHIVE_PATH" ]]; then
+            echo "::error::Downloaded archive is missing or empty: $ARCHIVE_PATH"
+            exit 1
+          fi
+
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+
+          ls -lh "$ARCHIVE_PATH"
+
+      - name: Extract tool4d archive
+        if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          ARCHIVE_PATH: ${{ steps.download.outputs.archive_path }}
+          INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
+        run: |
+          set -euo pipefail
+
+          rm -rf "$INSTALL_PATH"
+          mkdir -p "$INSTALL_PATH"
+
+          tar -xJf "$ARCHIVE_PATH" -C "$INSTALL_PATH"
+
+          echo "Extracted files:"
+          find "$INSTALL_PATH" -maxdepth 4 -print
+
+      - name: Locate tool4d executable
+        id: locate
+        shell: bash
+        env:
+          INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d "$INSTALL_PATH" ]]; then
+            echo "::error::tool4d installation directory does not exist: $INSTALL_PATH"
+            exit 1
+          fi
+
+          case "$RUNNER_OS" in
+            macOS)
+              TOOL4D_EXECUTABLE="$(
+                find "$INSTALL_PATH" \
+                  -type f \
+                  -name "tool4d" \
+                  -print \
+                  -quit
+              )"
+              ;;
+
+            Windows)
+              TOOL4D_EXECUTABLE="$(
+                find "$INSTALL_PATH" \
+                  -type f \
+                  -iname "tool4d.exe" \
+                  -print \
+                  -quit
+              )"
+              ;;
+
+            *)
+              echo "::error::Unsupported runner OS: $RUNNER_OS"
+              exit 1
+              ;;
+          esac
+
+          if [[ -z "$TOOL4D_EXECUTABLE" ]]; then
+            echo "::error::tool4d executable was not found in: $INSTALL_PATH"
+            exit 1
+          fi
+
+          chmod +x "$TOOL4D_EXECUTABLE" 2>/dev/null || true
+
+          TOOL4D_DIRECTORY="$(dirname "$TOOL4D_EXECUTABLE")"
+
+          echo "executable=$TOOL4D_EXECUTABLE" >> "$GITHUB_OUTPUT"
+          echo "TOOL4D_HOME=$INSTALL_PATH" >> "$GITHUB_ENV"
+          echo "TOOL4D_EXECUTABLE=$TOOL4D_EXECUTABLE" >> "$GITHUB_ENV"
+          echo "$TOOL4D_DIRECTORY" >> "$GITHUB_PATH"
+
+          echo "Cache hit         : ${{ steps.cache.outputs.cache-hit }}"
+          echo "tool4d executable : $TOOL4D_EXECUTABLE"
 
       - name: Add result to job summary
         shell: bash
@@ -209,9 +382,13 @@ jobs:
           BUILD: ${{ steps.resolve.outputs.build }}
           TOOL4D_OS: ${{ steps.resolve.outputs.os }}
           TOOL4D_TARGET: ${{ steps.resolve.outputs.target }}
+          CACHE_KEY: ${{ steps.resolve.outputs.cache_key }}
+          INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
+          TOOL4D_EXECUTABLE: ${{ steps.locate.outputs.executable }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
         run: |
           {
-            echo "## tool4d download"
+            echo "## tool4d"
             echo
             echo "| Property | Value |"
             echo "|---|---|"
@@ -219,5 +396,9 @@ jobs:
             echo "| Build | \`$BUILD\` |"
             echo "| OS | \`$TOOL4D_OS\` |"
             echo "| Target | \`$TOOL4D_TARGET\` |"
+            echo "| Cache key | \`$CACHE_KEY\` |"
+            echo "| Cache hit | \`$CACHE_HIT\` |"
+            echo "| Install path | \`$INSTALL_PATH\` |"
+            echo "| Executable | \`$TOOL4D_EXECUTABLE\` |"
             echo "| URL | $URL |"
           } >> "$GITHUB_STEP_SUMMARY"
