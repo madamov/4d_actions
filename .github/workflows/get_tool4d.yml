@@ -1,4 +1,4 @@
-name: Resolve tool4d download
+name: Download and cache tool4d
 
 on:
   workflow_call:
@@ -14,7 +14,7 @@ on:
         type: string
         default: "macos-latest"
 
-      versions-file:
+      versions_file:
         description: "Path to the JSON file containing available versions"
         required: false
         type: string
@@ -23,23 +23,39 @@ on:
     outputs:
       url:
         description: "Resolved tool4d download URL"
-        value: ${{ jobs.resolve.outputs.url }}
+        value: ${{ jobs.download.outputs.url }}
 
       build:
-        description: "Selected build number or hotfix"
-        value: ${{ jobs.resolve.outputs.build }}
+        description: "Selected build number"
+        value: ${{ jobs.download.outputs.build }}
 
       os:
-        description: "Resolved 4D operating-system identifier"
-        value: ${{ jobs.resolve.outputs.os }}
+        description: "Resolved operating-system identifier"
+        value: ${{ jobs.download.outputs.os }}
 
       target:
-        description: "Resolved 4D architecture identifier"
-        value: ${{ jobs.resolve.outputs.target }}
+        description: "Resolved architecture identifier"
+        value: ${{ jobs.download.outputs.target }}
 
+      cache_key:
+        description: "Cache key used for tool4d"
+        value: ${{ jobs.download.outputs.cache_key }}
+
+      cache_hit:
+        description: "Whether tool4d was restored from cache"
+        value: ${{ jobs.download.outputs.cache_hit }}
+
+      install_path:
+        description: "Directory containing extracted tool4d"
+        value: ${{ jobs.download.outputs.install_path }}
+
+      executable:
+        description: "Full path to the tool4d executable"
+        value: ${{ jobs.download.outputs.executable }}
+        
 jobs:
-  resolve:
-    name: Resolve tool4d URL
+  download:
+    name: Download tool4d ${{ inputs.version }}
     runs-on: ${{ inputs.runner }}
 
     outputs:
@@ -47,6 +63,10 @@ jobs:
       build: ${{ steps.resolve.outputs.build }}
       os: ${{ steps.resolve.outputs.os }}
       target: ${{ steps.resolve.outputs.target }}
+      cache_key: ${{ steps.resolve.outputs.cache_key }}
+      cache_hit: ${{ steps.cache.outputs.cache-hit }}
+      install_path: ${{ steps.resolve.outputs.install_path }}
+      executable: ${{ steps.locate.outputs.executable }}
 
     steps:
       - name: Checkout repository
@@ -57,7 +77,7 @@ jobs:
         shell: bash
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
-          VERSIONS_FILE: ${{ inputs.versions-file }}
+          VERSIONS_FILE: ${{ inputs.versions_file }}
           RUNNER_OS_VALUE: ${{ runner.os }}
           RUNNER_ARCH_VALUE: ${{ runner.arch }}
         run: |
