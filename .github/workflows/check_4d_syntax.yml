@@ -34,6 +34,17 @@ jobs:
       - name: Locate 4D project and determine tool4d cache key
         id: resolve
         shell: bash
+        env:
+          VERSIONS_JSON: |
+            [
+              {"version":"20.8","build":"101985","os":"mac","target":"arm64"},
+              {"version":"20.8","build":"101985","os":"mac","target":"x86_64"},
+              {"version":"20.8","build":"101985","os":"win","target":"x86_64"},
+
+              {"version":"21.1","build":"100468","os":"mac","target":"arm64"},
+              {"version":"21.1","build":"100468","os":"mac","target":"x86_64"},
+              {"version":"21.1","build":"100468","os":"win","target":"x86_64"}
+            ]
         run: |
           set -euo pipefail
 
@@ -89,34 +100,57 @@ jobs:
           VERSION_MINOR=$((COMPATIBILITY_VERSION % 100))
           TOOL4D_VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
 
+          SELECTED_ENTRY="$(
+            jq -c \
+              --arg version "$TOOL4D_VERSION" \
+              --arg os "$TOOL4D_OS" \
+              --arg target "$TOOL4D_TARGET" \
+              '
+              [
+                .[]
+                | select(
+                    .version == $version
+                    and .os == $os
+                    and .target == $target
+                  )
+                | . + {
+                    "_build_sort":
+                      if (.build | test("^[0-9]+$"))
+                      then (.build | tonumber)
+                      else -1
+                      end
+                  }
+              ]
+              | sort_by(._build_sort)
+              | last
+              | if . == null
+                then null
+                else del(._build_sort)
+                end
+              ' <<< "$VERSIONS_JSON"
+          )"
+          
+          if [[ "$SELECTED_ENTRY" == "null" || -z "$SELECTED_ENTRY" ]]; then
+            echo "::error::No tool4d download is configured for:"
+            echo "::error::Version: $TOOL4D_VERSION"
+            echo "::error::OS: $TOOL4D_OS"
+            echo "::error::Target: $TOOL4D_TARGET"
+            exit 1
+          fi
+          
+          TOOL4D_BUILD="$(jq -r '.build' <<< "$SELECTED_ENTRY")"
+          
           case "$RUNNER_OS" in
             macOS)
-              TOOL4D_OS="mac"
-
-              case "$RUNNER_ARCH" in
-                ARM64)
-                  TOOL4D_TARGET="arm64"
-                  ;;
-                X64)
-                  TOOL4D_TARGET="x86_64"
-                  ;;
-                *)
-                  echo "::error::Unsupported macOS architecture: $RUNNER_ARCH"
-                  exit 1
-                  ;;
-              esac
+              TOOL4D_ARCHIVE="tool4d_${TOOL4D_TARGET}.tar.xz"
               ;;
-
+          
             Windows)
-              TOOL4D_OS="win"
-              TOOL4D_TARGET="x86_64"
-              ;;
-
-            *)
-              echo "::error::Unsupported runner OS: $RUNNER_OS"
-              exit 1
+              TOOL4D_ARCHIVE="tool4d_win.tar.xz"
               ;;
           esac
+          
+          URL="https://product-download.4d.com/release/${VERSION_MAJOR}.x/${TOOL4D_VERSION}/${TOOL4D_BUILD}/${TOOL4D_OS}/${TOOL4D_ARCHIVE}"
 
           CACHE_KEY="tool4d-${TOOL4D_VERSION}-${TOOL4D_OS}-${TOOL4D_TARGET}"
           INSTALL_PATH="${RUNNER_TOOL_CACHE}/${CACHE_KEY}"
@@ -130,6 +164,9 @@ jobs:
           echo "4D project          : $PROJECT_FILE"
           echo "compatibilityVersion: $COMPATIBILITY_VERSION"
           echo "tool4d version      : $TOOL4D_VERSION"
+          echo "tool4d build        : $TOOL4D_BUILD"
+          echo "Download archive    : $TOOL4D_ARCHIVE"
+          echo "Download URL        : $URL"
           echo "Cache key           : $CACHE_KEY"
           echo "Install path        : $INSTALL_PATH"
 
@@ -137,6 +174,9 @@ jobs:
             echo "project_file=$PROJECT_FILE"
             echo "compatibility_version=$COMPATIBILITY_VERSION"
             echo "tool4d_version=$TOOL4D_VERSION"
+            echo "tool4d_build=$TOOL4D_BUILD"
+            echo "archive=$TOOL4D_ARCHIVE"
+            echo "url=$URL"
             echo "cache_key=$CACHE_KEY"
             echo "install_path=$INSTALL_PATH"
           } >> "$GITHUB_OUTPUT"
