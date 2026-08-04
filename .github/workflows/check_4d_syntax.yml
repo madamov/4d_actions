@@ -437,8 +437,9 @@ jobs:
           fi
       
           PROJECT_FILENAME="$(basename "$PROJECT_FILE_UNIX")"
-          ERROR_FILE_FOR_BASH="${ERROR_FOLDER_FOR_BASH}/${PROJECT_FILENAME}_errors.json"
-      
+          PROJECT_NAME="${PROJECT_FILENAME%.4DProject}"
+          ERROR_FILE_FOR_BASH="${ERROR_FOLDER_FOR_BASH}/${PROJECT_NAME}_errors.json"
+
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             ERROR_FILE="$(cygpath -w "$ERROR_FILE_FOR_BASH")"
           else
