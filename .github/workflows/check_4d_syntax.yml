@@ -143,11 +143,73 @@ jobs:
 
       - name: Restore tool4d cache
         id: tool4d-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache@v4
         with:
           path: ${{ steps.resolve.outputs.install_path }}
           key: ${{ steps.resolve.outputs.cache_key }}
-          fail-on-cache-miss: true
+
+      - name: Download tool4d when not cached
+        if: steps.tool4d-cache.outputs.cache-hit != 'true'
+        id: download-tool4d
+        shell: bash
+        env:
+          DOWNLOAD_URL: ${{ steps.resolve.outputs.url }}
+          ARCHIVE_NAME: ${{ steps.resolve.outputs.archive }}
+        run: |
+          set -euo pipefail
+      
+          DOWNLOAD_DIRECTORY="$RUNNER_TEMP/tool4d-download"
+          ARCHIVE_PATH="$DOWNLOAD_DIRECTORY/$ARCHIVE_NAME"
+      
+          rm -rf "$DOWNLOAD_DIRECTORY"
+          mkdir -p "$DOWNLOAD_DIRECTORY"
+      
+          echo "Cache not found. Downloading:"
+          echo "$DOWNLOAD_URL"
+      
+          curl \
+            --fail \
+            --location \
+            --show-error \
+            --silent \
+            --retry 3 \
+            --retry-delay 5 \
+            --output "$ARCHIVE_PATH" \
+            "$DOWNLOAD_URL"
+      
+          if [[ ! -s "$ARCHIVE_PATH" ]]; then
+            echo "::error::Downloaded tool4d archive is missing or empty."
+            exit 1
+          fi
+      
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+      
+          ls -lh "$ARCHIVE_PATH"
+      
+      - name: Extract downloaded tool4d
+        if: steps.tool4d-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          ARCHIVE_PATH: ${{ steps.download-tool4d.outputs.archive_path }}
+          INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
+        run: |
+          set -euo pipefail
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ARCHIVE_PATH_FOR_BASH="$(cygpath -u "$ARCHIVE_PATH")"
+            INSTALL_PATH_FOR_BASH="$(cygpath -u "$INSTALL_PATH")"
+          else
+            ARCHIVE_PATH_FOR_BASH="$ARCHIVE_PATH"
+            INSTALL_PATH_FOR_BASH="$INSTALL_PATH"
+          fi
+      
+          rm -rf "$INSTALL_PATH_FOR_BASH"
+          mkdir -p "$INSTALL_PATH_FOR_BASH"
+      
+          tar -xf "$ARCHIVE_PATH_FOR_BASH" \
+            -C "$INSTALL_PATH_FOR_BASH"
+      
+          find "$INSTALL_PATH_FOR_BASH" -maxdepth 4 -print
 
       - name: Locate tool4d executable
         id: tool4d
