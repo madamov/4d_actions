@@ -99,7 +99,41 @@ jobs:
           VERSION_MAJOR=$((COMPATIBILITY_VERSION / 100))
           VERSION_MINOR=$((COMPATIBILITY_VERSION % 100))
           TOOL4D_VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
-
+          
+          # Determine the tool4d operating system and architecture before
+          # searching VERSIONS_JSON.
+          case "$RUNNER_OS" in
+            macOS)
+              TOOL4D_OS="mac"
+          
+              case "$RUNNER_ARCH" in
+                ARM64)
+                  TOOL4D_TARGET="arm64"
+                  ;;
+                X64)
+                  TOOL4D_TARGET="x86_64"
+                  ;;
+                *)
+                  echo "::error::Unsupported macOS architecture: $RUNNER_ARCH"
+                  exit 1
+                  ;;
+              esac
+          
+              TOOL4D_ARCHIVE="tool4d_${TOOL4D_TARGET}.tar.xz"
+              ;;
+          
+            Windows)
+              TOOL4D_OS="win"
+              TOOL4D_TARGET="x86_64"
+              TOOL4D_ARCHIVE="tool4d_win.tar.xz"
+              ;;
+          
+            *)
+              echo "::error::Unsupported runner operating system: $RUNNER_OS"
+              exit 1
+              ;;
+          esac
+          
           SELECTED_ENTRY="$(
             jq -c \
               --arg version "$TOOL4D_VERSION" \
@@ -140,18 +174,8 @@ jobs:
           
           TOOL4D_BUILD="$(jq -r '.build' <<< "$SELECTED_ENTRY")"
           
-          case "$RUNNER_OS" in
-            macOS)
-              TOOL4D_ARCHIVE="tool4d_${TOOL4D_TARGET}.tar.xz"
-              ;;
-          
-            Windows)
-              TOOL4D_ARCHIVE="tool4d_win.tar.xz"
-              ;;
-          esac
-          
           URL="https://product-download.4d.com/release/${VERSION_MAJOR}.x/${TOOL4D_VERSION}/${TOOL4D_BUILD}/${TOOL4D_OS}/${TOOL4D_ARCHIVE}"
-
+          
           CACHE_KEY="tool4d-${TOOL4D_VERSION}-${TOOL4D_OS}-${TOOL4D_TARGET}"
           INSTALL_PATH="${RUNNER_TOOL_CACHE}/${CACHE_KEY}"
 
