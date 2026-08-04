@@ -19,6 +19,15 @@ on:
         type: string
         default: "macos-latest"
 
+    outputs:
+      success:
+        description: "Value of the success property from the tool4d result"
+        value: ${{ jobs.check-syntax.outputs.success }}
+
+      error_file:
+        description: "Full path to the tool4d syntax result JSON file"
+        value: ${{ jobs.check-syntax.outputs.error_file }}
+
 permissions:
   contents: read
 
@@ -26,6 +35,10 @@ jobs:
   check-syntax:
     name: Check 4D project syntax
     runs-on: ${{ inputs.runner }}
+
+    outputs:
+      success: ${{ steps.syntax-result.outputs.success }}
+      error_file: ${{ steps.syntax-result.outputs.error_file }}
 
     steps:
       - name: Checkout calling repository
@@ -196,6 +209,7 @@ jobs:
 
           {
             echo "project_file=$PROJECT_FILE"
+            echo "project_file_unix=$PROJECT_FILE_UNIX"
             echo "compatibility_version=$COMPATIBILITY_VERSION"
             echo "tool4d_version=$TOOL4D_VERSION"
             echo "tool4d_build=$TOOL4D_BUILD"
@@ -365,60 +379,82 @@ jobs:
           jq . <<< "$USER_PARAMETERS"
 
       - name: Check 4D project syntax
+        id: run-tool4d
         shell: bash
         env:
           TOOL4D_EXECUTABLE: ${{ steps.tool4d.outputs.executable }}
           PROJECT_FILE: ${{ steps.resolve.outputs.project_file }}
+          PROJECT_FILE_UNIX: ${{ steps.resolve.outputs.project_file_unix }}
           STARTUP_METHOD: ${{ inputs.startup_method }}
           USER_PARAMETERS: ${{ inputs.user_parameters }}
         run: |
-          set -euo pipefail
-
-           if [[ "$RUNNER_OS" == "Windows" ]]; then
-             DOCUMENTS_PATH="$USERPROFILE\\Documents"
-             WORKSPACE_PATH="$GITHUB_WORKSPACE"
-           else
-             DOCUMENTS_PATH="$HOME/Documents"
-             WORKSPACE_PATH="$GITHUB_WORKSPACE"
-           fi
-           
-           USER_PARAMETERS="$(
-             jq -c \
-               --arg documents "$DOCUMENTS_PATH" \
-               --arg workspace "$WORKSPACE_PATH" \
-               '
-               walk(
-                 if type == "string"
-                 then
-                   gsub("__DOCUMENTS__"; $documents)
-                   | gsub("__WORKSPACE__"; $workspace)
-                 else .
-                 end
-               )
-               ' <<< "$USER_PARAMETERS"
-           )"
-
-           ERROR_FOLDER_PATH="$(
-             jq -er '.errorFolderPath // empty' <<< "$USER_PARAMETERS"
-           )"
-           
-           if [[ -n "$ERROR_FOLDER_PATH" ]]; then
-             echo "Error folder: $ERROR_FOLDER_PATH"
-           
-             mkdir -p "$ERROR_FOLDER_PATH"
-           
-             if [[ ! -d "$ERROR_FOLDER_PATH" ]]; then
-               echo "::error::Unable to create error folder:"
-               echo "::error::$ERROR_FOLDER_PATH"
-               exit 1
-             fi
-           fi
-
-          echo "Project        : $PROJECT_FILE"
-          echo "Startup method : $STARTUP_METHOD"
+          set -uo pipefail
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            DOCUMENTS_PATH="$USERPROFILE\\Documents"
+            WORKSPACE_PATH="$GITHUB_WORKSPACE"
+          else
+            DOCUMENTS_PATH="$HOME/Documents"
+            WORKSPACE_PATH="$GITHUB_WORKSPACE"
+          fi
+      
+          USER_PARAMETERS="$(
+            jq -c \
+              --arg documents "$DOCUMENTS_PATH" \
+              --arg workspace "$WORKSPACE_PATH" \
+              '
+              walk(
+                if type == "string"
+                then
+                  gsub("__DOCUMENTS__"; $documents)
+                  | gsub("__WORKSPACE__"; $workspace)
+                else .
+                end
+              )
+              ' <<< "$USER_PARAMETERS"
+          )"
+      
+          ERROR_FOLDER_PATH="$(
+            jq -er '.errorFolderPath // empty' <<< "$USER_PARAMETERS"
+          )"
+      
+          if [[ -z "$ERROR_FOLDER_PATH" ]]; then
+            echo "::error::user_parameters does not contain errorFolderPath."
+            exit 1
+          fi
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ERROR_FOLDER_FOR_BASH="$(cygpath -u "$ERROR_FOLDER_PATH")"
+          else
+            ERROR_FOLDER_FOR_BASH="$ERROR_FOLDER_PATH"
+          fi
+      
+          mkdir -p "$ERROR_FOLDER_FOR_BASH"
+      
+          if [[ ! -d "$ERROR_FOLDER_FOR_BASH" ]]; then
+            echo "::error::Unable to create error folder: $ERROR_FOLDER_PATH"
+            exit 1
+          fi
+      
+          PROJECT_FILENAME="$(basename "$PROJECT_FILE_UNIX")"
+          ERROR_FILE_FOR_BASH="${ERROR_FOLDER_FOR_BASH}/${PROJECT_FILENAME}_errors.json"
+      
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ERROR_FILE="$(cygpath -w "$ERROR_FILE_FOR_BASH")"
+          else
+            ERROR_FILE="$ERROR_FILE_FOR_BASH"
+          fi
+      
+          # Remove a result from a previous invocation.
+          rm -f "$ERROR_FILE_FOR_BASH"
+      
+          echo "Project          : $PROJECT_FILE"
+          echo "Startup method   : $STARTUP_METHOD"
+          echo "Error folder     : $ERROR_FOLDER_PATH"
+          echo "Expected result  : $ERROR_FILE"
           echo "User parameters:"
           jq . <<< "$USER_PARAMETERS"
-
+      
           COMMAND=(
             "$TOOL4D_EXECUTABLE"
             -p "$PROJECT_FILE"
@@ -427,12 +463,75 @@ jobs:
             --dataless
             "--user-param=$USER_PARAMETERS"
           )
-
+      
           printf 'Command:'
           printf ' %q' "${COMMAND[@]}"
           printf '\n'
-
+      
+          set +e
           "${COMMAND[@]}"
+          TOOL4D_EXIT_CODE=$?
+          set -e
+      
+          echo "tool4d exit code: $TOOL4D_EXIT_CODE"
+      
+          {
+            echo "exit_code=$TOOL4D_EXIT_CODE"
+            echo "error_file=$ERROR_FILE"
+            echo "error_file_for_bash=$ERROR_FILE_FOR_BASH"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Read syntax-check result
+        id: syntax-result
+        if: always() && steps.run-tool4d.outcome != 'skipped'
+        shell: bash
+        env:
+          ERROR_FILE: ${{ steps.run-tool4d.outputs.error_file }}
+          ERROR_FILE_FOR_BASH: ${{ steps.run-tool4d.outputs.error_file_for_bash }}
+          TOOL4D_EXIT_CODE: ${{ steps.run-tool4d.outputs.exit_code }}
+        run: |
+          set -euo pipefail
+      
+          if [[ -z "$ERROR_FILE_FOR_BASH" ]]; then
+            echo "::error::Expected error-file path was not produced."
+            exit 1
+          fi
+      
+          if [[ ! -f "$ERROR_FILE_FOR_BASH" ]]; then
+            echo "::error::tool4d did not create the expected result file:"
+            echo "::error::$ERROR_FILE"
+            echo "::error::tool4d exit code: ${TOOL4D_EXIT_CODE:-unknown}"
+            exit 1
+          fi
+      
+          if ! jq -e . "$ERROR_FILE_FOR_BASH" >/dev/null 2>&1; then
+            echo "::error::The tool4d result file is not valid JSON:"
+            echo "::error::$ERROR_FILE"
+            exit 1
+          fi
+      
+          SUCCESS="$(
+            jq -er '
+              if .success == true then
+                "true"
+              elif .success == false then
+                "false"
+              else
+                error("The success property is missing or is not boolean")
+              end
+            ' "$ERROR_FILE_FOR_BASH"
+          )"
+      
+          echo "tool4d result file: $ERROR_FILE"
+          echo "Syntax success    : $SUCCESS"
+      
+          echo "Result JSON:"
+          jq . "$ERROR_FILE_FOR_BASH"
+      
+          {
+            echo "success=$SUCCESS"
+            echo "error_file=$ERROR_FILE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Add result to job summary
         if: always()
