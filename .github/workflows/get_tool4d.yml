@@ -263,9 +263,9 @@ jobs:
           path: ${{ steps.resolve.outputs.install_path }}
           key: ${{ steps.resolve.outputs.cache_key }}
 
-      - name: Download tool4d when not cached
-        if: steps.tool4d-cache.outputs.cache-hit != 'true'
-        id: download-tool4d
+      - name: Download tool4d archive
+        if: steps.cache.outputs.cache-hit != 'true'
+        id: download
         shell: bash
         env:
           DOWNLOAD_URL: ${{ steps.resolve.outputs.url }}
@@ -275,11 +275,12 @@ jobs:
       
           DOWNLOAD_DIRECTORY="$RUNNER_TEMP/tool4d-download"
           ARCHIVE_PATH="$DOWNLOAD_DIRECTORY/$ARCHIVE_NAME"
+          HEADERS_PATH="$DOWNLOAD_DIRECTORY/headers.txt"
       
           rm -rf "$DOWNLOAD_DIRECTORY"
           mkdir -p "$DOWNLOAD_DIRECTORY"
       
-          echo "Cache not found. Downloading:"
+          echo "Downloading:"
           echo "$DOWNLOAD_URL"
       
           curl \
@@ -289,42 +290,56 @@ jobs:
             --silent \
             --retry 3 \
             --retry-delay 5 \
+            --dump-header "$HEADERS_PATH" \
             --output "$ARCHIVE_PATH" \
             "$DOWNLOAD_URL"
       
           if [[ ! -s "$ARCHIVE_PATH" ]]; then
-            echo "::error::Downloaded tool4d archive is missing or empty."
+            echo "::error::Downloaded archive is missing or empty: $ARCHIVE_PATH"
             exit 1
           fi
       
-          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
-      
+          echo "Downloaded file:"
           ls -lh "$ARCHIVE_PATH"
       
-      - name: Extract downloaded tool4d
-        if: steps.tool4d-cache.outputs.cache-hit != 'true'
+          echo "Response headers:"
+          cat "$HEADERS_PATH"
+      
+          echo "Detected file type:"
+          file "$ARCHIVE_PATH" || true
+      
+          echo "First 32 bytes:"
+          od -An -tx1 -N32 "$ARCHIVE_PATH" || true
+      
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Extract tool4d archive
+        if: steps.cache.outputs.cache-hit != 'true'
         shell: bash
         env:
-          ARCHIVE_PATH: ${{ steps.download-tool4d.outputs.archive_path }}
+          ARCHIVE_PATH: ${{ steps.download.outputs.archive_path }}
           INSTALL_PATH: ${{ steps.resolve.outputs.install_path }}
         run: |
           set -euo pipefail
       
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            ARCHIVE_PATH_FOR_BASH="$(cygpath -u "$ARCHIVE_PATH")"
-            INSTALL_PATH_FOR_BASH="$(cygpath -u "$INSTALL_PATH")"
+            ARCHIVE_PATH_UNIX="$(cygpath -u "$ARCHIVE_PATH")"
+            INSTALL_PATH_UNIX="$(cygpath -u "$INSTALL_PATH")"
           else
-            ARCHIVE_PATH_FOR_BASH="$ARCHIVE_PATH"
-            INSTALL_PATH_FOR_BASH="$INSTALL_PATH"
+            ARCHIVE_PATH_UNIX="$ARCHIVE_PATH"
+            INSTALL_PATH_UNIX="$INSTALL_PATH"
           fi
       
-          rm -rf "$INSTALL_PATH_FOR_BASH"
-          mkdir -p "$INSTALL_PATH_FOR_BASH"
+          echo "Archive path : $ARCHIVE_PATH_UNIX"
+          echo "Install path : $INSTALL_PATH_UNIX"
       
-          tar -xf "$ARCHIVE_PATH_FOR_BASH" \
-            -C "$INSTALL_PATH_FOR_BASH"
+          rm -rf "$INSTALL_PATH_UNIX"
+          mkdir -p "$INSTALL_PATH_UNIX"
       
-          find "$INSTALL_PATH_FOR_BASH" -maxdepth 4 -print
+          tar -xf "$ARCHIVE_PATH_UNIX" -C "$INSTALL_PATH_UNIX"
+      
+          echo "Extracted files:"
+          find "$INSTALL_PATH_UNIX" -maxdepth 4 -print
 
       - name: Locate tool4d executable
         id: locate
