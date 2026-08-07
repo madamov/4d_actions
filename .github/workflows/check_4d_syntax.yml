@@ -60,7 +60,7 @@ jobs:
         
               {"version":"21.1","build":"100468","os":"mac","target":"arm64"},
               {"version":"21.1","build":"100468","os":"mac","target":"x86_64"},
-              {"version":"21.1","build":"100468","os":"win","target":"x86_64"}
+              {"version":"21.1","build":"100468","os":"win","target":"x86_64"},
 
               {"version":"21 R3","build":"100164","os":"mac","target":"arm64"},
               {"version":"21 R3","build":"100164","os":"mac","target":"x86_64"},
