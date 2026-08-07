@@ -18,7 +18,7 @@ Call one of the reusable workflows from another repository:
 ```yaml
 jobs:
   syntax:
-    uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@main
+    uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     with:
       startup_method: checkSyntax
       user_parameters: |
@@ -32,7 +32,7 @@ Use the outputs in subsequent jobs:
 ```yaml
 jobs:
   syntax:
-    uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@main
+    uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     with:
       startup_method: checkSyntax
       user_parameters: |
@@ -68,7 +68,7 @@ Typical usage:
 ```yaml
 jobs:
   tool4d:
-    uses: madamov/4d_actions/.github/workflows/get_tool4d.yml@main
+    uses: madamov/4d_actions/.github/workflows/get_tool4d.yml@v1
     with:
       version: "20.8"
       runner: macos-latest
@@ -185,22 +185,6 @@ The calling repository must contain:
 - A valid `compatibilityVersion`
 - The requested startup method
 - A startup method that generates the expected JSON result
-
----
-
-# Versioning
-
-Examples in this README use the latest version on the `main` branch:
-
-```yaml
-uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@main
-```
-
-For production workflows, using a release tag or commit SHA is recommended:
-
-```yaml
-uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
-```
 
 ---
 
