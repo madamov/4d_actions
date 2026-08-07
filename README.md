@@ -21,6 +21,7 @@ jobs:
     uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     with:
       startup_method: checkSyntax
+      runner: windows-latest  
       user_parameters: |
         {
           "errorFolderPath": "__DOCUMENTS__"
@@ -35,6 +36,7 @@ jobs:
     uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     with:
       startup_method: checkSyntax
+      runner: windows-latest
       user_parameters: |
         {
           "errorFolderPath": "__DOCUMENTS__"
