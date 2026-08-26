@@ -8,6 +8,13 @@ on:
         required: false
         type: string
         default: ""
+  workflow_dispatch:
+    inputs:
+      downloader_version:
+        description: "4D Downloader release tag; leave empty to use the latest release"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   get-4d-binaries:
