@@ -34,6 +34,8 @@ jobs:
           if [[ -n "$DOWNLOADER_VERSION" ]]; then
             download_args=("$DOWNLOADER_VERSION" "${download_args[@]}")
           fi
+          resolved_version="$(gh release view ${DOWNLOADER_VERSION:+"$DOWNLOADER_VERSION"} \
+            --repo madamov/4D-Downloader --json tagName --jq '.tagName')"
           gh release download "${download_args[@]}"
 
           dmg_path="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
@@ -52,6 +54,13 @@ jobs:
             exit 1
           fi
           sudo ditto "$app_path" "/Applications/4D_Downloader.app"
+
+          {
+            echo "DOWNLOADER_RELEASE=$resolved_version"
+            echo "DOWNLOADER_ARCHIVE_PATH=$dmg_path"
+            echo "DOWNLOADER_EXTRACT_PATH=$mount_path"
+            echo "DOWNLOADER_INSTALL_PATH=/Applications/4D_Downloader.app"
+          } >> "$GITHUB_ENV"
 
       - name: Download and install 4D Downloader (Windows)
         if: runner.os == 'Windows'
@@ -72,6 +81,20 @@ jobs:
             '--dir', $env:RUNNER_TEMP,
             '--clobber'
           )
+          $releaseArgs = @('release', 'view')
+          if ($env:DOWNLOADER_VERSION) {
+            $releaseArgs += $env:DOWNLOADER_VERSION
+          }
+          $releaseArgs += @(
+            '--repo', 'madamov/4D-Downloader',
+            '--json', 'tagName',
+            '--jq', '.tagName'
+          )
+          $resolvedVersion = & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not resolve the requested 4D Downloader release."
+          }
+
           & gh @downloadArgs
           if ($LASTEXITCODE -ne 0) {
             throw "Could not download the requested 4D Downloader release."
@@ -95,4 +118,24 @@ jobs:
           New-Item -Path $destination -ItemType Directory -Force | Out-Null
           Copy-Item -Path (Join-Path $executable.Directory.FullName '*') `
             -Destination $destination -Recurse -Force
-  
+
+          @(
+            "DOWNLOADER_RELEASE=$resolvedVersion"
+            "DOWNLOADER_ARCHIVE_PATH=$zipPath"
+            "DOWNLOADER_EXTRACT_PATH=$extractPath"
+            "DOWNLOADER_INSTALL_PATH=$destination"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo "## 4D Downloader"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Version | \`$DOWNLOADER_RELEASE\` |"
+            echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
+            echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
+            echo "| Installed to | \`$DOWNLOADER_INSTALL_PATH\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
