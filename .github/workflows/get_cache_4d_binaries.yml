@@ -4,14 +4,14 @@ on:
   workflow_call:
     inputs:
       downloader_version:
-        description: "4D Downloader release tag; leave empty to use the latest release"
+        description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
         required: false
         type: string
         default: ""
   workflow_dispatch:
     inputs:
       downloader_version:
-        description: "4D Downloader release tag; leave empty to use the latest release"
+        description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
         required: false
         type: string
         default: ""
@@ -37,12 +37,26 @@ jobs:
         run: |
           set -euo pipefail
 
-          download_args=(--repo madamov/4D-Downloader --pattern '*.dmg' --dir "$RUNNER_TEMP" --clobber)
           if [[ -n "$DOWNLOADER_VERSION" ]]; then
-            download_args=("$DOWNLOADER_VERSION" "${download_args[@]}")
+            requested_version="$DOWNLOADER_VERSION"
+            if [[ "$requested_version" != v* ]]; then
+              requested_version="v$requested_version"
+            fi
+          else
+            requested_version="$(gh release list --repo madamov/4D-Downloader \
+              --exclude-drafts --exclude-pre-releases --limit 1 \
+              --json tagName --jq '.[0].tagName')"
           fi
-          resolved_version="$(gh release view ${DOWNLOADER_VERSION:+"$DOWNLOADER_VERSION"} \
+
+          if [[ -z "$requested_version" ]]; then
+            echo "::error::No published 4D Downloader release was found."
+            exit 1
+          fi
+
+          resolved_version="$(gh release view "$requested_version" \
             --repo madamov/4D-Downloader --json tagName --jq '.tagName')"
+          download_args=("$resolved_version" --repo madamov/4D-Downloader \
+            --pattern '*.dmg' --dir "$RUNNER_TEMP" --clobber)
           gh release download "${download_args[@]}"
 
           dmg_path="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
@@ -78,21 +92,30 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $downloadArgs = @('release', 'download')
           if ($env:DOWNLOADER_VERSION) {
-            $downloadArgs += $env:DOWNLOADER_VERSION
+            $requestedVersion = $env:DOWNLOADER_VERSION.Trim()
+            if (-not $requestedVersion.StartsWith('v')) {
+              $requestedVersion = "v$requestedVersion"
+            }
+          } else {
+            $requestedVersion = & gh release list `
+              --repo 'madamov/4D-Downloader' `
+              --exclude-drafts `
+              --exclude-pre-releases `
+              --limit 1 `
+              --json tagName `
+              --jq '.[0].tagName'
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not list 4D Downloader releases."
+            }
           }
-          $downloadArgs += @(
-            '--repo', 'madamov/4D-Downloader',
-            '--pattern', '*.zip',
-            '--dir', $env:RUNNER_TEMP,
-            '--clobber'
-          )
-          $releaseArgs = @('release', 'view')
-          if ($env:DOWNLOADER_VERSION) {
-            $releaseArgs += $env:DOWNLOADER_VERSION
+
+          if (-not $requestedVersion) {
+            throw "No published 4D Downloader release was found."
           }
-          $releaseArgs += @(
+
+          $releaseArgs = @(
+            'release', 'view', $requestedVersion,
             '--repo', 'madamov/4D-Downloader',
             '--json', 'tagName',
             '--jq', '.tagName'
@@ -102,6 +125,13 @@ jobs:
             throw "Could not resolve the requested 4D Downloader release."
           }
 
+          $downloadArgs = @(
+            'release', 'download', $resolvedVersion,
+            '--repo', 'madamov/4D-Downloader',
+            '--pattern', '*.zip',
+            '--dir', $env:RUNNER_TEMP,
+            '--clobber'
+          )
           & gh @downloadArgs
           if ($LASTEXITCODE -ne 0) {
             throw "Could not download the requested 4D Downloader release."
