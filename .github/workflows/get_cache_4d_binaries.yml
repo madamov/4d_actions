@@ -1,0 +1,98 @@
+name: Download and cache 4D, 4D Server, 4D VL
+
+on:
+  workflow_call:
+    inputs:
+      downloader_version:
+        description: "4D Downloader release tag; leave empty to use the latest release"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  get-4d-binaries:
+    name: Get 4D binaries (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Download and install 4D Downloader (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOWNLOADER_VERSION: ${{ inputs.downloader_version }}
+        run: |
+          set -euo pipefail
+
+          download_args=(--repo madamov/4D-Downloader --pattern '*.dmg' --dir "$RUNNER_TEMP" --clobber)
+          if [[ -n "$DOWNLOADER_VERSION" ]]; then
+            download_args=("$DOWNLOADER_VERSION" "${download_args[@]}")
+          fi
+          gh release download "${download_args[@]}"
+
+          dmg_path="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
+          if [[ -z "$dmg_path" ]]; then
+            echo "::error::The selected release does not contain a DMG asset."
+            exit 1
+          fi
+
+          mount_path="$(mktemp -d "$RUNNER_TEMP/4d-downloader.XXXXXX")"
+          trap 'hdiutil detach "$mount_path" -quiet || true' EXIT
+          hdiutil attach "$dmg_path" -nobrowse -readonly -mountpoint "$mount_path" -quiet
+
+          app_path="$(find "$mount_path" -maxdepth 2 -type d -name '4D_Downloader.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "::error::4D_Downloader.app was not found in the DMG."
+            exit 1
+          fi
+          sudo ditto "$app_path" "/Applications/4D_Downloader.app"
+
+      - name: Download and install 4D Downloader (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DOWNLOADER_VERSION: ${{ inputs.downloader_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $downloadArgs = @('release', 'download')
+          if ($env:DOWNLOADER_VERSION) {
+            $downloadArgs += $env:DOWNLOADER_VERSION
+          }
+          $downloadArgs += @(
+            '--repo', 'madamov/4D-Downloader',
+            '--pattern', '*.zip',
+            '--dir', $env:RUNNER_TEMP,
+            '--clobber'
+          )
+          & gh @downloadArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download the requested 4D Downloader release."
+          }
+
+          $zipPath = Get-ChildItem -Path $env:RUNNER_TEMP -Filter '*.zip' -File |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $zipPath) {
+            throw "The selected release does not contain a ZIP asset."
+          }
+
+          $extractPath = Join-Path $env:RUNNER_TEMP '4d-downloader'
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          $executable = Get-ChildItem -Path $extractPath -Filter '4D_Downloader.exe' -File -Recurse |
+            Select-Object -First 1
+          if (-not $executable) {
+            throw "4D_Downloader.exe was not found in the ZIP archive."
+          }
+
+          $destination = Join-Path $env:ProgramFiles '4D_Downloader'
+          New-Item -Path $destination -ItemType Directory -Force | Out-Null
+          Copy-Item -Path (Join-Path $executable.Directory.FullName '*') `
+            -Destination $destination -Recurse -Force
+  
