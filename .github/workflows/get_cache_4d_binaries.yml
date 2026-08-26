@@ -8,6 +8,10 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      DOWNLOADER_TOKEN:
+        description: "Token with read access to the private madamov/4D-Downloader repository"
+        required: false
   workflow_dispatch:
     inputs:
       downloader_version:
@@ -32,7 +36,7 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DOWNLOADER_TOKEN || github.token }}
           DOWNLOADER_VERSION: ${{ inputs.downloader_version }}
         run: |
           set -euo pipefail
@@ -43,9 +47,12 @@ jobs:
               requested_version="v$requested_version"
             fi
           else
-            requested_version="$(gh release list --repo madamov/4D-Downloader \
-              --exclude-drafts --exclude-pre-releases --limit 1 \
-              --json tagName --jq '.[0].tagName')"
+            if ! requested_version="$(gh release list --repo madamov/4D-Downloader \
+                --exclude-drafts --exclude-pre-releases --limit 1 \
+                --json tagName --jq '.[0].tagName')"; then
+              echo "::error::Could not access madamov/4D-Downloader. Configure DOWNLOADER_TOKEN with read access to that private repository."
+              exit 1
+            fi
           fi
 
           if [[ -z "$requested_version" ]]; then
@@ -53,8 +60,11 @@ jobs:
             exit 1
           fi
 
-          resolved_version="$(gh release view "$requested_version" \
-            --repo madamov/4D-Downloader --json tagName --jq '.tagName')"
+          if ! resolved_version="$(gh release view "$requested_version" \
+              --repo madamov/4D-Downloader --json tagName --jq '.tagName')"; then
+            echo "::error::Could not access release $requested_version in madamov/4D-Downloader. Check DOWNLOADER_TOKEN and the release tag."
+            exit 1
+          fi
           download_args=("$resolved_version" --repo madamov/4D-Downloader \
             --pattern '*.dmg' --dir "$RUNNER_TEMP" --clobber)
           gh release download "${download_args[@]}"
@@ -87,7 +97,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.DOWNLOADER_TOKEN || github.token }}
           DOWNLOADER_VERSION: ${{ inputs.downloader_version }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -106,7 +116,7 @@ jobs:
               --json tagName `
               --jq '.[0].tagName'
             if ($LASTEXITCODE -ne 0) {
-              throw "Could not list 4D Downloader releases."
+              throw "Could not access madamov/4D-Downloader. Configure DOWNLOADER_TOKEN with read access to that private repository."
             }
           }
 
@@ -122,7 +132,7 @@ jobs:
           )
           $resolvedVersion = & gh @releaseArgs
           if ($LASTEXITCODE -ne 0) {
-            throw "Could not resolve the requested 4D Downloader release."
+            throw "Could not access release $requestedVersion in madamov/4D-Downloader. Check DOWNLOADER_TOKEN and the release tag."
           }
 
           $downloadArgs = @(
