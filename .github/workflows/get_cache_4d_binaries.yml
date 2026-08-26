@@ -65,13 +65,41 @@ jobs:
             echo "::error::Could not access release $requested_version in madamov/4D-Downloader. Check DOWNLOADER_TOKEN and the release tag."
             exit 1
           fi
+
+          runner_arch="${RUNNER_ARCH:-$(uname -m)}"
+          case "$runner_arch" in
+            ARM64|arm64)
+              asset_arch_pattern='(arm|aarch64|silicon)'
+              architecture='Apple Silicon'
+              ;;
+            X64|x86_64)
+              asset_arch_pattern='(intel|x64|x86_64|amd64)'
+              architecture='Intel'
+              ;;
+            *)
+              echo "::error::Unsupported macOS architecture: $runner_arch"
+              exit 1
+              ;;
+          esac
+
+          asset_names="$(gh release view "$resolved_version" \
+            --repo madamov/4D-Downloader --json assets --jq '.assets[].name')"
+          asset_name="$(printf '%s\n' "$asset_names" \
+            | grep -Ei '\.dmg$' \
+            | grep -Ei "$asset_arch_pattern" \
+            | sed -n '1p' || true)"
+          if [[ -z "$asset_name" ]]; then
+            echo "::error::Release $resolved_version does not contain a DMG for $architecture ($runner_arch)."
+            exit 1
+          fi
+
           download_args=("$resolved_version" --repo madamov/4D-Downloader \
-            --pattern '*.dmg' --dir "$RUNNER_TEMP" --clobber)
+            --pattern "$asset_name" --dir "$RUNNER_TEMP" --clobber)
           gh release download "${download_args[@]}"
 
-          dmg_path="$(find "$RUNNER_TEMP" -maxdepth 1 -type f -name '*.dmg' -print -quit)"
-          if [[ -z "$dmg_path" ]]; then
-            echo "::error::The selected release does not contain a DMG asset."
+          dmg_path="$RUNNER_TEMP/$asset_name"
+          if [[ ! -f "$dmg_path" ]]; then
+            echo "::error::The selected DMG was not downloaded to $dmg_path."
             exit 1
           fi
 
@@ -88,6 +116,7 @@ jobs:
 
           {
             echo "DOWNLOADER_RELEASE=$resolved_version"
+            echo "DOWNLOADER_ARCHITECTURE=$architecture"
             echo "DOWNLOADER_ARCHIVE_PATH=$dmg_path"
             echo "DOWNLOADER_EXTRACT_PATH=$mount_path"
             echo "DOWNLOADER_INSTALL_PATH=/Applications/4D_Downloader.app"
@@ -168,6 +197,7 @@ jobs:
 
           @(
             "DOWNLOADER_RELEASE=$resolvedVersion"
+            "DOWNLOADER_ARCHITECTURE=$env:RUNNER_ARCH"
             "DOWNLOADER_ARCHIVE_PATH=$zipPath"
             "DOWNLOADER_EXTRACT_PATH=$extractPath"
             "DOWNLOADER_INSTALL_PATH=$destination"
@@ -182,6 +212,7 @@ jobs:
             echo "| Item | Value |"
             echo "| --- | --- |"
             echo "| Version | \`$DOWNLOADER_RELEASE\` |"
+            echo "| Architecture | \`$DOWNLOADER_ARCHITECTURE\` |"
             echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
             echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
             echo "| Installed to | \`$DOWNLOADER_INSTALL_PATH\` |"
