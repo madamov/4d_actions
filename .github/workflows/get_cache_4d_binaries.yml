@@ -397,6 +397,60 @@ jobs:
 
           Write-Host "Downloaded '$($installer.Name)' to '$($installer.FullName)' ($($installer.Length) bytes)."
 
+      - name: Install 4D applications from DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$FOUR_D_INSTALLER_PATH" ]]; then
+            echo "::error::The downloaded 4D DMG was not found at $FOUR_D_INSTALLER_PATH."
+            exit 1
+          fi
+
+          mount_path="$(mktemp -d "$RUNNER_TEMP/4d-installer.XXXXXX")"
+          detach_dmg() {
+            hdiutil detach "$mount_path" -quiet || true
+            rmdir "$mount_path" 2>/dev/null || true
+          }
+          trap detach_dmg EXIT
+
+          hdiutil attach "$FOUR_D_INSTALLER_PATH" \
+            -nobrowse \
+            -readonly \
+            -mountpoint "$mount_path" \
+            -quiet
+
+          applications=(
+            "4D.app"
+            "4D Server.app"
+            "4D Volume Desktop.app"
+          )
+
+          for application_name in "${applications[@]}"; do
+            source_path="$(find "$mount_path" -maxdepth 4 -type d \
+              -name "$application_name" -print -quit)"
+            if [[ -z "$source_path" ]]; then
+              echo "::error::$application_name was not found in the mounted DMG."
+              exit 1
+            fi
+
+            destination_path="/Applications/$application_name"
+            sudo ditto "$source_path" "$destination_path"
+            if [[ ! -d "$destination_path" ]]; then
+              echo "::error::Failed to install $application_name at $destination_path."
+              exit 1
+            fi
+
+            echo "Installed $application_name at $destination_path."
+          done
+
+          {
+            echo "FOUR_D_APP_PATH=/Applications/4D.app"
+            echo "FOUR_D_SERVER_APP_PATH=/Applications/4D Server.app"
+            echo "FOUR_D_VOLUME_DESKTOP_APP_PATH=/Applications/4D Volume Desktop.app"
+          } >> "$GITHUB_ENV"
+
       - name: Add workflow summary
         shell: bash
         run: |
@@ -410,6 +464,11 @@ jobs:
             echo "| Product URL | \`$PRODUCT_DOWNLOAD_URL\` |"
             echo "| File list | \`$DOWNLOADER_FILE_LIST_PATH\` |"
             echo "| 4D installer | \`$FOUR_D_INSTALLER_PATH\` |"
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              echo "| 4D | \`$FOUR_D_APP_PATH\` |"
+              echo "| 4D Server | \`$FOUR_D_SERVER_APP_PATH\` |"
+              echo "| 4D Volume Desktop | \`$FOUR_D_VOLUME_DESKTOP_APP_PATH\` |"
+            fi
             echo "| Architecture | \`$DOWNLOADER_ARCHITECTURE\` |"
             echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
             echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
