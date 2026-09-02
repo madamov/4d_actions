@@ -70,6 +70,76 @@ jobs:
       FOUR_D_VERSION: ${{ inputs.version }}
 
     steps:
+      - name: Create 4D Downloader file list
+        id: file-list
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $version = $env:FOUR_D_VERSION.Trim()
+          if (-not $version) {
+            throw 'The version input must not be empty.'
+          }
+
+          if ($env:RUNNER_OS -eq 'macOS') {
+            $platform = 'mac'
+            $platformName = 'Mac'
+            $extension = 'dmg'
+          } elseif ($env:RUNNER_OS -eq 'Windows') {
+            $platform = 'win'
+            $platformName = 'Windows'
+            $extension = 'exe'
+          } else {
+            throw "Unsupported runner operating system: $env:RUNNER_OS"
+          }
+
+          $versionEntry = $env:VERSIONS_JSON |
+            ConvertFrom-Json |
+            Where-Object { $_.version -eq $version -and $_.os -eq $platform } |
+            Select-Object -First 1
+          if (-not $versionEntry) {
+            throw "Version '$version' is not configured for platform '$platform'."
+          }
+
+          if ($version -match '^(?<major>\d+)\.(?<minor>\d+) HF\d+$') {
+            $releaseFamily = "$($Matches.major).x"
+            $build = 'hotfix'
+            $archiveVersion = "$($Matches.major).$($Matches.minor) LTS"
+          } elseif ($version -match '^(?<major>\d+)\.(?<minor>\d+)$') {
+            $releaseFamily = "$($Matches.major).x"
+            $build = [string]$versionEntry.build
+            $archiveVersion = "$version LTS"
+          } elseif ($version -match '^(?<major>\d+) R\d+$') {
+            $releaseFamily = "$($Matches.major) Rx"
+            $build = [string]$versionEntry.build
+            $archiveVersion = $version
+          } else {
+            throw "Unsupported 4D version format: '$version'."
+          }
+
+          $encodedFamily = [uri]::EscapeDataString($releaseFamily)
+          $encodedVersion = [uri]::EscapeDataString($version)
+          $archiveName = "4D $archiveVersion $platformName.$extension"
+          $encodedArchiveName = [uri]::EscapeDataString($archiveName)
+          $url = "https://product-download.4d.com/release/$encodedFamily/$encodedVersion/$build/$platform/$encodedArchiveName"
+          $fileList = ConvertTo-Json -Compress -InputObject @($url)
+          $fileListPath = Join-Path $env:RUNNER_TEMP '4d-downloader-file-list.json'
+          Set-Content -LiteralPath $fileListPath -Value $fileList -Encoding utf8NoBOM
+
+          @(
+            "PRODUCT_DOWNLOAD_URL=$url"
+            "DOWNLOADER_FILE_LIST=$fileList"
+            "DOWNLOADER_FILE_LIST_PATH=$fileListPath"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          @(
+            "url=$url"
+            "json=$fileList"
+            "path=$fileListPath"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host "Created 4D Downloader file list for $version ($platformName): $fileList"
+
       - name: Download and install 4D Downloader (macOS)
         if: runner.os == 'macOS'
         shell: bash
@@ -250,6 +320,9 @@ jobs:
             echo "| Item | Value |"
             echo "| --- | --- |"
             echo "| Version | \`$DOWNLOADER_RELEASE\` |"
+            echo "| Requested 4D version | \`$FOUR_D_VERSION\` |"
+            echo "| Product URL | \`$PRODUCT_DOWNLOAD_URL\` |"
+            echo "| File list | \`$DOWNLOADER_FILE_LIST_PATH\` |"
             echo "| Architecture | \`$DOWNLOADER_ARCHITECTURE\` |"
             echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
             echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
