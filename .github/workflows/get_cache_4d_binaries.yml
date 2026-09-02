@@ -451,6 +451,96 @@ jobs:
             echo "FOUR_D_VOLUME_DESKTOP_APP_PATH=/Applications/4D Volume Desktop.app"
           } >> "$GITHUB_ENV"
 
+      - name: Install 4D applications with Inno Setup
+        id: install-4d-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Test-Path -LiteralPath $env:FOUR_D_INSTALLER_PATH -PathType Leaf)) {
+            throw "The downloaded 4D installer was not found at '$env:FOUR_D_INSTALLER_PATH'."
+          }
+
+          $installLog = Join-Path $env:RUNNER_TEMP '4d-inno-install.log'
+          $installerArguments = @(
+            '/VERYSILENT'
+            '/SUPPRESSMSGBOXES'
+            '/NORESTART'
+            '/SP-'
+            "/LOG=$installLog"
+          )
+
+          $process = Start-Process `
+            -FilePath $env:FOUR_D_INSTALLER_PATH `
+            -ArgumentList $installerArguments `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) {
+            if (Test-Path -LiteralPath $installLog) {
+              Write-Host 'Inno Setup log:'
+              Get-Content -LiteralPath $installLog
+            }
+            throw "The 4D installer exited with code $($process.ExitCode)."
+          }
+
+          if ($env:FOUR_D_VERSION -match '^(?<major>\d+) R\d+$') {
+            $familyDirectoryName = "4D $($Matches.major) Rx"
+          } elseif ($env:FOUR_D_VERSION -match '^(?<major>\d+)\.') {
+            $familyDirectoryName = "4D $($Matches.major).x"
+          } else {
+            throw "Cannot determine the installation family for '$env:FOUR_D_VERSION'."
+          }
+
+          $familyCandidates = @(
+            (Join-Path $env:ProgramFiles $familyDirectoryName)
+            (Join-Path (Join-Path $env:ProgramFiles '4D') $familyDirectoryName)
+          )
+          $familyPath = $familyCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+            Select-Object -First 1
+          if (-not $familyPath) {
+            $familyPath = Get-ChildItem -Path $env:ProgramFiles -Directory -Recurse |
+              Where-Object { $_.Name -eq $familyDirectoryName } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $familyPath) {
+            throw "The default '$familyDirectoryName' installation directory was not found under '$env:ProgramFiles'."
+          }
+
+          $applicationFolders = [ordered]@{
+            FOUR_D_APP_PATH = '4D'
+            FOUR_D_SERVER_APP_PATH = '4D Server'
+            FOUR_D_VOLUME_DESKTOP_APP_PATH = '4D Volume Desktop'
+          }
+          $installedPaths = [ordered]@{}
+          foreach ($entry in $applicationFolders.GetEnumerator()) {
+            $applicationPath = Join-Path $familyPath $entry.Value
+            if (-not (Test-Path -LiteralPath $applicationPath -PathType Container)) {
+              $applicationPath = Get-ChildItem -Path $familyPath -Directory -Recurse |
+                Where-Object { $_.Name -eq $entry.Value } |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $applicationPath) {
+              throw "The '$($entry.Value)' installation folder was not found under '$familyPath'."
+            }
+            $installedPaths[$entry.Key] = $applicationPath
+            Write-Host "Found $($entry.Value) at '$applicationPath'."
+          }
+
+          @(
+            "FOUR_D_INSTALL_ROOT=$familyPath"
+            "FOUR_D_APP_PATH=$($installedPaths.FOUR_D_APP_PATH)"
+            "FOUR_D_SERVER_APP_PATH=$($installedPaths.FOUR_D_SERVER_APP_PATH)"
+            "FOUR_D_VOLUME_DESKTOP_APP_PATH=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            "root=$familyPath"
+            "4d=$($installedPaths.FOUR_D_APP_PATH)"
+            "server=$($installedPaths.FOUR_D_SERVER_APP_PATH)"
+            "volume-desktop=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
       - name: Add workflow summary
         shell: bash
         run: |
@@ -464,11 +554,9 @@ jobs:
             echo "| Product URL | \`$PRODUCT_DOWNLOAD_URL\` |"
             echo "| File list | \`$DOWNLOADER_FILE_LIST_PATH\` |"
             echo "| 4D installer | \`$FOUR_D_INSTALLER_PATH\` |"
-            if [[ "$RUNNER_OS" == "macOS" ]]; then
-              echo "| 4D | \`$FOUR_D_APP_PATH\` |"
-              echo "| 4D Server | \`$FOUR_D_SERVER_APP_PATH\` |"
-              echo "| 4D Volume Desktop | \`$FOUR_D_VOLUME_DESKTOP_APP_PATH\` |"
-            fi
+            echo "| 4D | \`$FOUR_D_APP_PATH\` |"
+            echo "| 4D Server | \`$FOUR_D_SERVER_APP_PATH\` |"
+            echo "| 4D Volume Desktop | \`$FOUR_D_VOLUME_DESKTOP_APP_PATH\` |"
             echo "| Architecture | \`$DOWNLOADER_ARCHITECTURE\` |"
             echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
             echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
