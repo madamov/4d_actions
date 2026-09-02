@@ -541,6 +541,24 @@ jobs:
             "volume-desktop=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
           ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Cache 4D
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.FOUR_D_APP_PATH }}
+          key: ${{ runner.os }}-4d-${{ inputs.version }}
+
+      - name: Cache 4D Server
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.FOUR_D_SERVER_APP_PATH }}
+          key: ${{ runner.os }}-4d_server-${{ inputs.version }}
+
+      - name: Cache 4D Volume Desktop
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.FOUR_D_VOLUME_DESKTOP_APP_PATH }}
+          key: ${{ runner.os }}-4d_volume_desktop-${{ inputs.version }}
+
       - name: Add workflow summary
         shell: bash
         run: |
