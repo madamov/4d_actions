@@ -130,6 +130,7 @@ jobs:
             "PRODUCT_DOWNLOAD_URL=$url"
             "DOWNLOADER_FILE_LIST=$fileList"
             "DOWNLOADER_FILE_LIST_PATH=$fileListPath"
+            "FOUR_D_INSTALLER_NAME=$archiveName"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           @(
@@ -311,6 +312,91 @@ jobs:
             "DOWNLOADER_INSTALL_PATH=$destination"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
+      - name: Download 4D installer (macOS)
+        id: download-4d-macos
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$PRODUCT_DOWNLOAD_USERNAME" || -z "$PRODUCT_DOWNLOAD_PASSWORD" ]]; then
+            echo "::error::PRODUCT_DOWNLOAD_USERNAME and PRODUCT_DOWNLOAD_PASSWORD must both be configured."
+            exit 1
+          fi
+
+          downloader_path="/Applications/4D_Downloader.app/Contents/MacOS/4D_Downloader"
+          if [[ ! -x "$downloader_path" ]]; then
+            echo "::error::4D Downloader executable was not found at $downloader_path."
+            exit 1
+          fi
+
+          downloads_path="$HOME/Downloads"
+          mkdir -p "$downloads_path"
+
+          "$downloader_path" \
+            -u "$PRODUCT_DOWNLOAD_USERNAME" \
+            -p "$PRODUCT_DOWNLOAD_PASSWORD" \
+            -l "$DOWNLOADER_FILE_LIST"
+
+          installer_path="$downloads_path/$FOUR_D_INSTALLER_NAME"
+          if [[ ! -f "$installer_path" ]]; then
+            echo "::error::4D Downloader completed, but the expected installer was not found at $installer_path."
+            exit 1
+          fi
+
+          installer_size="$(stat -f '%z' "$installer_path")"
+          echo "FOUR_D_INSTALLER_PATH=$installer_path" >> "$GITHUB_ENV"
+          {
+            echo "path=$installer_path"
+            echo "name=$FOUR_D_INSTALLER_NAME"
+            echo "size=$installer_size"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Downloaded '$FOUR_D_INSTALLER_NAME' to '$installer_path' ($installer_size bytes)."
+
+      - name: Download 4D installer (Windows)
+        id: download-4d-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not $env:PRODUCT_DOWNLOAD_USERNAME -or -not $env:PRODUCT_DOWNLOAD_PASSWORD) {
+            throw 'PRODUCT_DOWNLOAD_USERNAME and PRODUCT_DOWNLOAD_PASSWORD must both be configured.'
+          }
+
+          $downloadsPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+          New-Item -Path $downloadsPath -ItemType Directory -Force | Out-Null
+
+          $downloaderPath = Join-Path $env:DOWNLOADER_INSTALL_PATH '4D_Downloader.exe'
+          if (-not (Test-Path -LiteralPath $downloaderPath -PathType Leaf)) {
+            throw "4D Downloader executable was not found at '$downloaderPath'."
+          }
+
+          & $downloaderPath `
+            -u $env:PRODUCT_DOWNLOAD_USERNAME `
+            -p $env:PRODUCT_DOWNLOAD_PASSWORD `
+            -l $env:DOWNLOADER_FILE_LIST
+          if ($LASTEXITCODE -ne 0) {
+            throw "4D Downloader exited with code $LASTEXITCODE."
+          }
+
+          $installerPath = Join-Path $downloadsPath $env:FOUR_D_INSTALLER_NAME
+          if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+            throw "4D Downloader completed, but the expected installer was not found at '$installerPath'."
+          }
+
+          $installer = Get-Item -LiteralPath $installerPath
+          "FOUR_D_INSTALLER_PATH=$($installer.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            "path=$($installer.FullName)"
+            "name=$($installer.Name)"
+            "size=$($installer.Length)"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host "Downloaded '$($installer.Name)' to '$($installer.FullName)' ($($installer.Length) bytes)."
+
       - name: Add workflow summary
         shell: bash
         run: |
@@ -323,6 +409,7 @@ jobs:
             echo "| Requested 4D version | \`$FOUR_D_VERSION\` |"
             echo "| Product URL | \`$PRODUCT_DOWNLOAD_URL\` |"
             echo "| File list | \`$DOWNLOADER_FILE_LIST_PATH\` |"
+            echo "| 4D installer | \`$FOUR_D_INSTALLER_PATH\` |"
             echo "| Architecture | \`$DOWNLOADER_ARCHITECTURE\` |"
             echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
             echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
