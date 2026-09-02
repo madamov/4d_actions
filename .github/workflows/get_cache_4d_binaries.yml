@@ -3,17 +3,31 @@ name: Download and cache 4D, 4D Server, 4D VL
 on:
   workflow_call:
     inputs:
+      version:
+        description: "4D version to download and cache (for example, 20.8 HF4 or 21 R3)"
+        required: true
+        type: string
       downloader_version:
         description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
         required: false
         type: string
         default: ""
     secrets:
+      PRODUCT_DOWNLOAD_USERNAME:
+        description: "Username for product-download.4d.com"
+        required: true
+      PRODUCT_DOWNLOAD_PASSWORD:
+        description: "Password for product-download.4d.com"
+        required: true
       DOWNLOADER_TOKEN:
         description: "Token with read access to the private madamov/4D-Downloader repository"
         required: false
   workflow_dispatch:
     inputs:
+      version:
+        description: "4D version to download and cache (for example, 20.8 HF4 or 21 R3)"
+        required: true
+        type: string
       downloader_version:
         description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
         required: false
@@ -50,6 +64,10 @@ jobs:
           - macos-latest
           - windows-latest
     runs-on: ${{ matrix.os }}
+    env:
+      PRODUCT_DOWNLOAD_USERNAME: ${{ secrets.PRODUCT_DOWNLOAD_USERNAME }}
+      PRODUCT_DOWNLOAD_PASSWORD: ${{ secrets.PRODUCT_DOWNLOAD_PASSWORD }}
+      FOUR_D_VERSION: ${{ inputs.version }}
 
     steps:
       - name: Download and install 4D Downloader (macOS)
