@@ -373,12 +373,21 @@ jobs:
             throw "4D Downloader executable was not found at '$downloaderPath'."
           }
 
-          & $downloaderPath `
-            -u $env:PRODUCT_DOWNLOAD_USERNAME `
-            -p $env:PRODUCT_DOWNLOAD_PASSWORD `
-            -l $env:DOWNLOADER_FILE_LIST
-          if ($LASTEXITCODE -ne 0) {
-            throw "4D Downloader exited with code $LASTEXITCODE."
+          $arguments = @(
+            '-u', $env:PRODUCT_DOWNLOAD_USERNAME
+            '-p', $env:PRODUCT_DOWNLOAD_PASSWORD
+            '-l', $env:DOWNLOADER_FILE_LIST
+          )
+
+          $process = Start-Process `
+            -FilePath $downloaderPath `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru `
+            -NoNewWindow
+
+          if ($process.ExitCode -ne 0) {
+            throw "4D Downloader exited with code $($process.ExitCode)."
           }
 
           $installerPath = Join-Path $downloadsPath $env:FOUR_D_INSTALLER_NAME
