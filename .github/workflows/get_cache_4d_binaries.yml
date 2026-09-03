@@ -373,10 +373,14 @@ jobs:
             throw "4D Downloader executable was not found at '$downloaderPath'."
           }
 
+          # Start-Process rebuilds ArgumentList as a Windows command line. Escape
+          # the JSON quotes so they remain literal characters in the -l value.
+          $escapedFileList = $env:DOWNLOADER_FILE_LIST.Replace('"', '\"')
+
           $arguments = @(
             '-u', $env:PRODUCT_DOWNLOAD_USERNAME
             '-p', $env:PRODUCT_DOWNLOAD_PASSWORD
-            '-l', $env:DOWNLOADER_FILE_LIST
+            '-l', $escapedFileList
           )
 
           $process = Start-Process `
