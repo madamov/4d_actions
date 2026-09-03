@@ -476,11 +476,13 @@ jobs:
           }
 
           $installLog = Join-Path $env:RUNNER_TEMP '4d-inno-install.log'
+          $installRoot = Join-Path $env:RUNNER_TEMP '4d-install'
           $installerArguments = @(
             '/VERYSILENT'
             '/SUPPRESSMSGBOXES'
             '/NORESTART'
             '/SP-'
+            "/DIR=$installRoot"
             "/LOG=$installLog"
           )
 
@@ -497,28 +499,8 @@ jobs:
             throw "The 4D installer exited with code $($process.ExitCode)."
           }
 
-          if ($env:FOUR_D_VERSION -match '^(?<major>\d+) R\d+$') {
-            $familyDirectoryName = "4D $($Matches.major) Rx"
-          } elseif ($env:FOUR_D_VERSION -match '^(?<major>\d+)\.') {
-            $familyDirectoryName = "4D $($Matches.major).x"
-          } else {
-            throw "Cannot determine the installation family for '$env:FOUR_D_VERSION'."
-          }
-
-          $familyCandidates = @(
-            (Join-Path $env:ProgramFiles $familyDirectoryName)
-            (Join-Path (Join-Path $env:ProgramFiles '4D') $familyDirectoryName)
-          )
-          $familyPath = $familyCandidates |
-            Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
-            Select-Object -First 1
-          if (-not $familyPath) {
-            $familyPath = Get-ChildItem -Path $env:ProgramFiles -Directory -Recurse |
-              Where-Object { $_.Name -eq $familyDirectoryName } |
-              Select-Object -First 1 -ExpandProperty FullName
-          }
-          if (-not $familyPath) {
-            throw "The default '$familyDirectoryName' installation directory was not found under '$env:ProgramFiles'."
+          if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+            throw "The 4D installation directory was not created at '$installRoot'."
           }
 
           $applicationFolders = [ordered]@{
@@ -528,27 +510,27 @@ jobs:
           }
           $installedPaths = [ordered]@{}
           foreach ($entry in $applicationFolders.GetEnumerator()) {
-            $applicationPath = Join-Path $familyPath $entry.Value
+            $applicationPath = Join-Path $installRoot $entry.Value
             if (-not (Test-Path -LiteralPath $applicationPath -PathType Container)) {
-              $applicationPath = Get-ChildItem -Path $familyPath -Directory -Recurse |
+              $applicationPath = Get-ChildItem -Path $installRoot -Directory -Recurse |
                 Where-Object { $_.Name -eq $entry.Value } |
                 Select-Object -First 1 -ExpandProperty FullName
             }
             if (-not $applicationPath) {
-              throw "The '$($entry.Value)' installation folder was not found under '$familyPath'."
+              throw "The '$($entry.Value)' installation folder was not found under '$installRoot'."
             }
             $installedPaths[$entry.Key] = $applicationPath
             Write-Host "Found $($entry.Value) at '$applicationPath'."
           }
 
           @(
-            "FOUR_D_INSTALL_ROOT=$familyPath"
+            "FOUR_D_INSTALL_ROOT=$installRoot"
             "FOUR_D_APP_PATH=$($installedPaths.FOUR_D_APP_PATH)"
             "FOUR_D_SERVER_APP_PATH=$($installedPaths.FOUR_D_SERVER_APP_PATH)"
             "FOUR_D_VOLUME_DESKTOP_APP_PATH=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
           ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           @(
-            "root=$familyPath"
+            "root=$installRoot"
             "4d=$($installedPaths.FOUR_D_APP_PATH)"
             "server=$($installedPaths.FOUR_D_SERVER_APP_PATH)"
             "volume-desktop=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
