@@ -33,6 +33,9 @@ on:
       SFTP_PASSWORD:
         description: "Password for the optional SFTP archive upload"
         required: false
+      SFTP_HOST_FINGERPRINT:
+        description: "Expected SHA-256 fingerprint of the SFTP server SSH host key"
+        required: false
   workflow_dispatch:
     inputs:
       version:
@@ -87,6 +90,7 @@ jobs:
       SFTP_URL: ${{ inputs.sftp_url }}
       SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
       SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+      SFTP_HOST_FINGERPRINT: ${{ secrets.SFTP_HOST_FINGERPRINT }}
 
     steps:
       - name: Create 4D Downloader file list
@@ -633,10 +637,66 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ -z "$SFTP_URL" || -z "$SFTP_USERNAME" || -z "$SFTP_PASSWORD" ]]; then
-            echo "SFTP URL, username, and password were not all provided; skipping archive upload."
+          if [[ -z "$SFTP_URL" || -z "$SFTP_USERNAME" || -z "$SFTP_PASSWORD" || -z "$SFTP_HOST_FINGERPRINT" ]]; then
+            echo "SFTP URL, username, password, and host fingerprint were not all provided; skipping archive upload."
             exit 0
           fi
+
+          if [[ "$SFTP_URL" != sftp://* ]]; then
+            echo "::error::sftp_url must start with sftp://."
+            exit 1
+          fi
+
+          authority="${SFTP_URL#sftp://}"
+          authority="${authority%%/*}"
+          host_port="${authority##*@}"
+          sftp_host="$host_port"
+          sftp_port="22"
+          if [[ "$host_port" == *:* ]]; then
+            sftp_host="${host_port%%:*}"
+            sftp_port="${host_port##*:}"
+          fi
+          if [[ -z "$sftp_host" ]]; then
+            echo "::error::Could not extract SFTP hostname."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          scanned_keys="$RUNNER_TEMP/sftp-host-keys"
+          verified_keys="$RUNNER_TEMP/sftp-verified-host-keys"
+          rm -f "$scanned_keys" "$verified_keys"
+          ssh-keyscan -p "$sftp_port" "$sftp_host" > "$scanned_keys"
+          if [[ ! -s "$scanned_keys" ]]; then
+            echo "::error::ssh-keyscan returned no host keys."
+            exit 1
+          fi
+
+          match_found=false
+          while IFS= read -r key_line; do
+            [[ -n "$key_line" ]] || continue
+            [[ "$key_line" == \#* ]] && continue
+            actual_fingerprint="$(
+              printf '%s\n' "$key_line" |
+                ssh-keygen -lf - -E sha256 |
+                awk '{print $2}'
+            )"
+            echo "Found host key fingerprint: $actual_fingerprint"
+            if [[ "$actual_fingerprint" == "$SFTP_HOST_FINGERPRINT" ]]; then
+              printf '%s\n' "$key_line" >> "$verified_keys"
+              match_found=true
+            fi
+          done < "$scanned_keys"
+          if [[ "$match_found" != "true" ]]; then
+            echo "::error::None of the server keys matched the expected SSH host fingerprint."
+            exit 1
+          fi
+
+          cp "$verified_keys" "$HOME/.ssh/known_hosts"
+          ssh-keygen -H -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1
+          rm -f "$HOME/.ssh/known_hosts.old"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "SSH host fingerprint verified successfully."
 
           curl_path="$(brew --prefix curl)/bin/curl"
           if [[ ! -x "$curl_path" ]]; then
@@ -669,19 +729,124 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          if (-not $env:SFTP_URL -or -not $env:SFTP_USERNAME -or -not $env:SFTP_PASSWORD) {
-            Write-Host 'SFTP URL, username, and password were not all provided; skipping archive upload.'
+          if (-not $env:SFTP_URL -or -not $env:SFTP_USERNAME -or -not $env:SFTP_PASSWORD -or -not $env:SFTP_HOST_FINGERPRINT) {
+            Write-Host 'SFTP URL, username, password, and host fingerprint were not all provided; skipping archive upload.'
             exit 0
           }
 
-          $curlPath = Join-Path $env:ProgramFiles 'Git\mingw64\bin\curl.exe'
-          if (-not (Test-Path -LiteralPath $curlPath -PathType Leaf)) {
-            throw "Git for Windows curl was not found at '$curlPath'."
+          $candidates = @(
+            'C:\Program Files\Git\mingw64\bin\curl.exe'
+            'C:\msys64\usr\bin\curl.exe'
+            'C:\Windows\System32\curl.exe'
+          )
+          $curlPath = $null
+          foreach ($candidate in $candidates) {
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+              Write-Host "Not found: $candidate"
+              continue
+            }
+            Write-Host "Checking: $candidate"
+            $versionOutput = & $candidate --version
+            $curlExitCode = $LASTEXITCODE
+            if ($curlExitCode -ne 0) {
+              Write-Warning "Could not run $candidate"
+              continue
+            }
+            $versionOutput | ForEach-Object { Write-Host $_ }
+            $protocolLine = $versionOutput |
+              Where-Object { $_ -match '^Protocols:' } |
+              Select-Object -First 1
+            if ($protocolLine -match '(^|\s)sftp(\s|$)') {
+              $curlPath = $candidate
+              break
+            }
+            Write-Host 'This curl does not support SFTP.'
           }
-          $curlVersion = & $curlPath --version
-          if ($LASTEXITCODE -ne 0 -or $curlVersion -notmatch 'sftp') {
-            throw 'Git for Windows curl does not report SFTP protocol support.'
+          if (-not $curlPath) {
+            throw 'No installed curl executable supports SFTP.'
           }
+          Write-Host "Selected SFTP-capable curl: $curlPath"
+
+          if (-not $env:SFTP_URL.StartsWith('sftp://')) {
+            throw 'sftp_url must start with sftp://.'
+          }
+          $uri = [System.Uri]$env:SFTP_URL
+          $sftpHost = $uri.Host
+          if ([string]::IsNullOrWhiteSpace($sftpHost)) {
+            throw 'Could not extract SFTP hostname.'
+          }
+          $sftpPort = $uri.Port
+          if ($sftpPort -le 0) {
+            $sftpPort = 22
+          }
+
+          $gitSshDirectory = 'C:\Program Files\Git\usr\bin'
+          $sshKeyscanCandidates = @(
+            (Join-Path $gitSshDirectory 'ssh-keyscan.exe')
+            'C:\Windows\System32\OpenSSH\ssh-keyscan.exe'
+          )
+          $sshKeygenCandidates = @(
+            (Join-Path $gitSshDirectory 'ssh-keygen.exe')
+            'C:\Windows\System32\OpenSSH\ssh-keygen.exe'
+          )
+          $sshKeyscan = $sshKeyscanCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          $sshKeygen = $sshKeygenCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($sshKeyscan)) {
+            throw 'Could not locate ssh-keyscan.exe.'
+          }
+          if ([string]::IsNullOrWhiteSpace($sshKeygen)) {
+            throw 'Could not locate ssh-keygen.exe.'
+          }
+
+          $scannedKeysFile = Join-Path $env:RUNNER_TEMP 'sftp-host-keys'
+          $verifiedKeysFile = Join-Path $env:RUNNER_TEMP 'sftp-verified-host-keys'
+          Remove-Item $scannedKeysFile, $verifiedKeysFile -Force -ErrorAction SilentlyContinue
+          & $sshKeyscan -p $sftpPort $sftpHost |
+            Out-File -FilePath $scannedKeysFile -Encoding ascii
+          if ($LASTEXITCODE -ne 0) {
+            throw "ssh-keyscan failed with exit code $LASTEXITCODE."
+          }
+          if (-not (Test-Path $scannedKeysFile) -or (Get-Item $scannedKeysFile).Length -eq 0) {
+            throw 'ssh-keyscan returned no SSH host keys.'
+          }
+
+          $matchingKeys = @()
+          foreach ($keyLine in Get-Content $scannedKeysFile) {
+            if ([string]::IsNullOrWhiteSpace($keyLine) -or $keyLine.StartsWith('#')) {
+              continue
+            }
+            $temporaryKey = Join-Path $env:RUNNER_TEMP 'sftp-single-host-key'
+            Set-Content -Path $temporaryKey -Value $keyLine -Encoding ascii
+            $fingerprintOutput = & $sshKeygen -lf $temporaryKey -E sha256
+            if ($LASTEXITCODE -ne 0) {
+              continue
+            }
+            if ($fingerprintOutput -match 'SHA256:[^\s]+') {
+              $actualFingerprint = $Matches[0]
+              Write-Host "Found host key fingerprint: $actualFingerprint"
+              if ($actualFingerprint -eq $env:SFTP_HOST_FINGERPRINT) {
+                $matchingKeys += $keyLine
+              }
+            }
+          }
+          if ($matchingKeys.Count -eq 0) {
+            throw 'None of the server keys matched the expected SSH host fingerprint.'
+          }
+
+          $sshDirectory = Join-Path $HOME '.ssh'
+          $knownHosts = Join-Path $sshDirectory 'known_hosts'
+          New-Item -ItemType Directory -Path $sshDirectory -Force | Out-Null
+          $matchingKeys | Out-File -FilePath $knownHosts -Encoding ascii
+          & $sshKeygen -H -f $knownHosts | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to hash the verified known_hosts file.'
+          }
+          Remove-Item "$knownHosts.old" -Force -ErrorAction SilentlyContinue
+          Write-Host 'SSH host fingerprint verified successfully.'
 
           $destination = $env:SFTP_URL.TrimEnd('/')
           $credentials = "$($env:SFTP_USERNAME):$($env:SFTP_PASSWORD)"
