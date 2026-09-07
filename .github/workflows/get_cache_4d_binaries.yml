@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: ""
+      sftp_url:
+        description: "SFTP destination directory URL (for example, sftp://files.example.com/4d)"
+        required: false
+        type: string
+        default: ""
     secrets:
       PRODUCT_DOWNLOAD_USERNAME:
         description: "Username for product-download.4d.com"
@@ -22,6 +27,12 @@ on:
       DOWNLOADER_TOKEN:
         description: "Token with read access to the private madamov/4D-Downloader repository"
         required: false
+      SFTP_USERNAME:
+        description: "Username for the optional SFTP archive upload"
+        required: false
+      SFTP_PASSWORD:
+        description: "Password for the optional SFTP archive upload"
+        required: false
   workflow_dispatch:
     inputs:
       version:
@@ -30,6 +41,11 @@ on:
         type: string
       downloader_version:
         description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
+        required: false
+        type: string
+        default: ""
+      sftp_url:
+        description: "SFTP destination directory URL (for example, sftp://files.example.com/4d)"
         required: false
         type: string
         default: ""
@@ -68,6 +84,9 @@ jobs:
       PRODUCT_DOWNLOAD_USERNAME: ${{ secrets.PRODUCT_DOWNLOAD_USERNAME }}
       PRODUCT_DOWNLOAD_PASSWORD: ${{ secrets.PRODUCT_DOWNLOAD_PASSWORD }}
       FOUR_D_VERSION: ${{ inputs.version }}
+      SFTP_URL: ${{ inputs.sftp_url }}
+      SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
+      SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
 
     steps:
       - name: Create 4D Downloader file list
@@ -553,6 +572,137 @@ jobs:
         with:
           path: ${{ env.FOUR_D_VOLUME_DESKTOP_APP_PATH }}
           key: ${{ runner.os }}-4d_volume_desktop-${{ inputs.version }}
+
+      - name: Create 4D archives (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_version="$(printf '%s' "$FOUR_D_VERSION" | tr '. ' '__')"
+          archive_directory="$RUNNER_TEMP/4d-archives"
+          mkdir -p "$archive_directory"
+
+          four_d_archive="$archive_directory/4d_${archive_version}_mac.zip"
+          server_archive="$archive_directory/4d_${archive_version}_mac_server.zip"
+          volume_desktop_archive="$archive_directory/4d_${archive_version}_mac_vl.zip"
+
+          ditto -c -k --sequesterRsrc --keepParent "$FOUR_D_APP_PATH" "$four_d_archive"
+          ditto -c -k --sequesterRsrc --keepParent "$FOUR_D_SERVER_APP_PATH" "$server_archive"
+          ditto -c -k --sequesterRsrc --keepParent "$FOUR_D_VOLUME_DESKTOP_APP_PATH" "$volume_desktop_archive"
+
+          {
+            echo "FOUR_D_ARCHIVE_PATH=$four_d_archive"
+            echo "FOUR_D_SERVER_ARCHIVE_PATH=$server_archive"
+            echo "FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH=$volume_desktop_archive"
+          } >> "$GITHUB_ENV"
+
+          ls -lh "$four_d_archive" "$server_archive" "$volume_desktop_archive"
+
+      - name: Create 4D archives (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $archiveVersion = $env:FOUR_D_VERSION.Trim() -replace '[. ]', '_'
+          $archiveDirectory = Join-Path $env:RUNNER_TEMP '4d-archives'
+          New-Item -Path $archiveDirectory -ItemType Directory -Force | Out-Null
+
+          $archives = [ordered]@{
+            FOUR_D_ARCHIVE_PATH = @($env:FOUR_D_APP_PATH, "4d_${archiveVersion}_win.zip")
+            FOUR_D_SERVER_ARCHIVE_PATH = @($env:FOUR_D_SERVER_APP_PATH, "4d_${archiveVersion}_win_server.zip")
+            FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH = @($env:FOUR_D_VOLUME_DESKTOP_APP_PATH, "4d_${archiveVersion}_win_vl.zip")
+          }
+
+          foreach ($entry in $archives.GetEnumerator()) {
+            $sourcePath = $entry.Value[0]
+            $archivePath = Join-Path $archiveDirectory $entry.Value[1]
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+              throw "The installed application directory was not found at '$sourcePath'."
+            }
+            Compress-Archive -LiteralPath $sourcePath -DestinationPath $archivePath -CompressionLevel Optimal -Force
+            "$($entry.Key)=$archivePath" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "Created '$archivePath' ($((Get-Item -LiteralPath $archivePath).Length) bytes)."
+          }
+
+      - name: Upload 4D archives to SFTP (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SFTP_URL" || -z "$SFTP_USERNAME" || -z "$SFTP_PASSWORD" ]]; then
+            echo "SFTP URL, username, and password were not all provided; skipping archive upload."
+            exit 0
+          fi
+
+          curl_path="$(brew --prefix curl)/bin/curl"
+          if [[ ! -x "$curl_path" ]]; then
+            echo "::error::Homebrew curl was not found at $curl_path."
+            exit 1
+          fi
+          if ! "$curl_path" --version | grep -q 'sftp'; then
+            echo "::error::Homebrew curl does not report SFTP protocol support."
+            exit 1
+          fi
+
+          destination="${SFTP_URL%/}"
+          for archive_path in \
+            "$FOUR_D_ARCHIVE_PATH" \
+            "$FOUR_D_SERVER_ARCHIVE_PATH" \
+            "$FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH"; do
+            archive_name="$(basename "$archive_path")"
+            "$curl_path" \
+              --fail --show-error --silent \
+              --ftp-create-dirs \
+              --user "$SFTP_USERNAME:$SFTP_PASSWORD" \
+              --upload-file "$archive_path" \
+              "$destination/$archive_name"
+            echo "Uploaded $archive_name."
+          done
+
+      - name: Upload 4D archives to SFTP (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not $env:SFTP_URL -or -not $env:SFTP_USERNAME -or -not $env:SFTP_PASSWORD) {
+            Write-Host 'SFTP URL, username, and password were not all provided; skipping archive upload.'
+            exit 0
+          }
+
+          $curlPath = Join-Path $env:ProgramFiles 'Git\mingw64\bin\curl.exe'
+          if (-not (Test-Path -LiteralPath $curlPath -PathType Leaf)) {
+            throw "Git for Windows curl was not found at '$curlPath'."
+          }
+          $curlVersion = & $curlPath --version
+          if ($LASTEXITCODE -ne 0 -or $curlVersion -notmatch 'sftp') {
+            throw 'Git for Windows curl does not report SFTP protocol support.'
+          }
+
+          $destination = $env:SFTP_URL.TrimEnd('/')
+          $credentials = "$($env:SFTP_USERNAME):$($env:SFTP_PASSWORD)"
+          $archivePaths = @(
+            $env:FOUR_D_ARCHIVE_PATH
+            $env:FOUR_D_SERVER_ARCHIVE_PATH
+            $env:FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH
+          )
+          foreach ($archivePath in $archivePaths) {
+            $archiveName = Split-Path -Leaf $archivePath
+            & $curlPath `
+              --fail --show-error --silent `
+              --ftp-create-dirs `
+              --user $credentials `
+              --upload-file $archivePath `
+              "$destination/$archiveName"
+            if ($LASTEXITCODE -ne 0) {
+              throw "SFTP upload failed for '$archiveName' with curl exit code $LASTEXITCODE."
+            }
+            Write-Host "Uploaded $archiveName."
+          }
 
       - name: Add workflow summary
         shell: bash
