@@ -102,7 +102,7 @@ Typical usage:
 ```yaml
 jobs:
   cache-4d-binaries:
-    uses: madamov/4d_actions/.github/workflows/get_cache_4d_binaries.yml@main
+    uses: madamov/4d_actions/.github/workflows/get_cache_4d_binaries.yml@v1
     with:
       version: "20.8 HF3"
       downloader_version: "1.0.0" # Optional; defaults to the latest release.
@@ -270,22 +270,6 @@ The calling repository must contain:
 
 ---
 
-# Versioning
-
-Examples for functionality added after `v1` use the latest code on the `main` branch:
-
-```yaml
-uses: madamov/4d_actions/.github/workflows/get_cache_4d_binaries.yml@main
-```
-
-For production workflows, prefer a release tag or commit SHA containing the workflow version you need. Existing workflows released with version 1 can use the major tag:
-
-```yaml
-uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
-```
-
----
-
 # Repository Structure
 
 ```
@@ -294,7 +278,7 @@ uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     ├── get_cache_4d_binaries.yml
     ├── get_tool4d.yml
     ├── check_4d_syntax.yml
-    └── update-major-version-tag.yml
+
 ```
 
 ---
