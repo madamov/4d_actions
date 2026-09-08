@@ -805,13 +805,29 @@ jobs:
           $scannedKeysFile = Join-Path $env:RUNNER_TEMP 'sftp-host-keys'
           $verifiedKeysFile = Join-Path $env:RUNNER_TEMP 'sftp-verified-host-keys'
           Remove-Item $scannedKeysFile, $verifiedKeysFile -Force -ErrorAction SilentlyContinue
-          & $sshKeyscan -p $sftpPort $sftpHost |
-            Out-File -FilePath $scannedKeysFile -Encoding ascii
-          if ($LASTEXITCODE -ne 0) {
-            throw "ssh-keyscan failed with exit code $LASTEXITCODE."
+          Write-Host "Using ssh-keygen: $sshKeygen"
+
+          $keyscanExitCode = $null
+          foreach ($keyscanCandidate in $sshKeyscanCandidates) {
+            if (-not (Test-Path -LiteralPath $keyscanCandidate -PathType Leaf)) {
+              continue
+            }
+            Remove-Item $scannedKeysFile -Force -ErrorAction SilentlyContinue
+            Write-Host "Using ssh-keyscan: $keyscanCandidate"
+            & $keyscanCandidate -p $sftpPort $sftpHost |
+              Out-File -FilePath $scannedKeysFile -Encoding ascii
+            $keyscanExitCode = $LASTEXITCODE
+            if ((Test-Path $scannedKeysFile) -and (Get-Item $scannedKeysFile).Length -gt 0) {
+              $sshKeyscan = $keyscanCandidate
+              break
+            }
+            Write-Warning "No host keys were returned by $keyscanCandidate (exit code $keyscanExitCode)."
           }
           if (-not (Test-Path $scannedKeysFile) -or (Get-Item $scannedKeysFile).Length -eq 0) {
-            throw 'ssh-keyscan returned no SSH host keys.'
+            throw 'No installed ssh-keyscan executable returned SSH host keys.'
+          }
+          if ($keyscanExitCode -ne 0) {
+            Write-Warning "ssh-keyscan exited with code $keyscanExitCode but returned host keys; continuing with fingerprint verification."
           }
 
           $matchingKeys = @()
