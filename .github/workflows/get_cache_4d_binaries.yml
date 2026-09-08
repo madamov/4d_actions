@@ -873,14 +873,29 @@ jobs:
           )
           foreach ($archivePath in $archivePaths) {
             $archiveName = Split-Path -Leaf $archivePath
+            $escapedArchiveName = [System.Uri]::EscapeDataString($archiveName)
+            $remoteUrl = "$destination/$escapedArchiveName"
             & $curlPath `
               --fail --show-error --silent `
               --ftp-create-dirs `
               --user $credentials `
               --upload-file $archivePath `
-              "$destination/$archiveName"
-            if ($LASTEXITCODE -ne 0) {
-              throw "SFTP upload failed for '$archiveName' with curl exit code $LASTEXITCODE."
+              $remoteUrl
+            $curlExitCode = $LASTEXITCODE
+
+            if ($curlExitCode -eq 78) {
+              Write-Warning "The initial upload could not create or open the remote path. Retrying without --ftp-create-dirs in case another matrix job created it concurrently."
+              Start-Sleep -Seconds 2
+              & $curlPath `
+                --fail --show-error --silent `
+                --user $credentials `
+                --upload-file $archivePath `
+                $remoteUrl
+              $curlExitCode = $LASTEXITCODE
+            }
+
+            if ($curlExitCode -ne 0) {
+              throw "SFTP upload failed for '$archiveName' with curl exit code $curlExitCode. Verify that the remote directory exists and that the SFTP account can create files in it."
             }
             Write-Host "Uploaded $archiveName."
           }
