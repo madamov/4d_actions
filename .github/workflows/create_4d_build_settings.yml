@@ -1,0 +1,212 @@
+name: Create 4D build settings
+
+on:
+  workflow_call:
+    inputs:
+      settings_json:
+        description: >-
+          JSON object containing the children of Preferences4D/BuildApp.
+          JSON arrays are written as 4D ItemsCount/ItemN collections.
+        required: true
+        type: string
+
+      output_file:
+        description: "Workspace-relative path of the generated settings file"
+        required: false
+        type: string
+        default: "buildApp.4DSettings"
+
+      artifact_name:
+        description: "Name of the artifact containing the settings file"
+        required: false
+        type: string
+        default: "4d-build-settings"
+
+      retention_days:
+        description: "Number of days to retain the uploaded artifact"
+        required: false
+        type: number
+        default: 7
+
+      runner:
+        description: "Runner used to create the settings file"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+
+    outputs:
+      file:
+        description: "Workspace-relative path of the generated settings file"
+        value: ${{ jobs.create-settings.outputs.file }}
+
+      filename:
+        description: "Filename of the generated settings file"
+        value: ${{ jobs.create-settings.outputs.filename }}
+
+      artifact_name:
+        description: "Name of the uploaded artifact"
+        value: ${{ jobs.create-settings.outputs.artifact_name }}
+
+      artifact_id:
+        description: "ID of the uploaded artifact"
+        value: ${{ jobs.create-settings.outputs.artifact_id }}
+
+      sha256:
+        description: "SHA-256 digest of the generated settings file"
+        value: ${{ jobs.create-settings.outputs.sha256 }}
+
+      xml:
+        description: "Generated UTF-8 XML document"
+        value: ${{ jobs.create-settings.outputs.xml }}
+
+permissions:
+  contents: read
+
+jobs:
+  create-settings:
+    name: Create 4D build settings
+    runs-on: ${{ inputs.runner }}
+
+    outputs:
+      file: ${{ steps.generate.outputs.file }}
+      filename: ${{ steps.generate.outputs.filename }}
+      artifact_name: ${{ inputs.artifact_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      sha256: ${{ steps.generate.outputs.sha256 }}
+      xml: ${{ steps.generate.outputs.xml }}
+
+    steps:
+      - name: Generate buildApp.4DSettings
+        id: generate
+        shell: bash
+        env:
+          SETTINGS_JSON: ${{ inputs.settings_json }}
+          OUTPUT_FILE: ${{ inputs.output_file }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import xml.etree.ElementTree as ET
+
+          output_value = os.environ["OUTPUT_FILE"].replace("\\", "/")
+          output_path = PurePosixPath(output_value)
+
+          if (
+              not output_value
+              or output_path.is_absolute()
+              or output_path.name in ("", ".")
+              or ".." in output_path.parts
+              or re.match(r"^[A-Za-z]:", output_value)
+          ):
+              raise SystemExit(
+                  "output_file must be a non-empty path below the GitHub workspace"
+              )
+
+          try:
+              settings = json.loads(os.environ["SETTINGS_JSON"])
+          except json.JSONDecodeError as error:
+              raise SystemExit(f"settings_json is not valid JSON: {error}") from error
+
+          if not isinstance(settings, dict):
+              raise SystemExit("settings_json must contain a JSON object")
+
+          # Accept either the documented BuildApp contents or a complete wrapper.
+          if set(settings) == {"Preferences4D"}:
+              settings = settings["Preferences4D"]
+              if not isinstance(settings, dict) or set(settings) != {"BuildApp"}:
+                  raise SystemExit(
+                      "Preferences4D must contain exactly one BuildApp object"
+                  )
+              settings = settings["BuildApp"]
+          elif set(settings) == {"BuildApp"}:
+              settings = settings["BuildApp"]
+
+          if not isinstance(settings, dict):
+              raise SystemExit("BuildApp settings must contain a JSON object")
+
+          xml_name = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+          def scalar_text(value):
+              if isinstance(value, bool):
+                  return "True" if value else "False"
+              if value is None:
+                  return ""
+              if isinstance(value, (str, int, float)):
+                  return str(value)
+              raise TypeError(
+                  f"Expected a string, number, boolean, null, object, or array; "
+                  f"received {type(value).__name__}"
+              )
+
+          def append_value(parent, key, value, location):
+              if not isinstance(key, str) or not xml_name.fullmatch(key):
+                  raise ValueError(f"Invalid XML key at {location}: {key!r}")
+
+              element = ET.SubElement(parent, key)
+
+              if isinstance(value, dict):
+                  for child_key, child_value in value.items():
+                      append_value(
+                          element,
+                          child_key,
+                          child_value,
+                          f"{location}.{child_key}",
+                      )
+              elif isinstance(value, list):
+                  ET.SubElement(element, "ItemsCount").text = str(len(value))
+                  for index, item in enumerate(value, start=1):
+                      if isinstance(item, (dict, list)):
+                          raise TypeError(
+                              f"Array item at {location}[{index - 1}] must be scalar"
+                          )
+                      ET.SubElement(element, f"Item{index}").text = scalar_text(item)
+              else:
+                  element.text = scalar_text(value)
+
+          root = ET.Element("Preferences4D")
+          build_app = ET.SubElement(root, "BuildApp")
+
+          try:
+              for key, value in settings.items():
+                  append_value(build_app, key, value, f"BuildApp.{key}")
+          except (TypeError, ValueError) as error:
+              raise SystemExit(str(error)) from error
+
+          ET.indent(root, space="  ")
+          body = ET.tostring(root, encoding="unicode", short_empty_elements=False)
+          xml = '<?xml version="1.0" encoding="UTF-8" standalone="no" ?>\n' + body + '\n'
+
+          destination = Path(os.environ["GITHUB_WORKSPACE"]) / Path(*output_path.parts)
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text(xml, encoding="utf-8", newline="\n")
+
+          # Parse the persisted document as a final well-formedness check.
+          ET.parse(destination)
+
+          digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+          github_output = Path(os.environ["GITHUB_OUTPUT"])
+          delimiter = f"XML_{digest}"
+
+          with github_output.open("a", encoding="utf-8") as output:
+              output.write(f"file={output_value}\n")
+              output.write(f"filename={destination.name}\n")
+              output.write(f"sha256={digest}\n")
+              output.write(f"xml<<{delimiter}\n{xml}{delimiter}\n")
+
+          print(f"Created {output_value}")
+          print(f"SHA-256: {digest}")
+          PY
+
+      - name: Upload build settings
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ steps.generate.outputs.file }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
