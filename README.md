@@ -8,6 +8,7 @@ A collection of reusable GitHub Actions workflows for automating the build, test
 |----------|-------------|
 | `get_tool4d.yml` | Downloads and caches the appropriate version of **tool4d** for the current runner. |
 | `check_4d_syntax.yml` | Runs a 4D startup method using **tool4d** and returns the result to the calling workflow. |
+| `get_cache_4d_binaries.yml` | Downloads, installs, caches, archives, and optionally uploads 4D build binaries for macOS and Windows. |
 
 ---
 
@@ -81,6 +82,84 @@ The workflow automatically:
 - Downloads tool4d if it is not already cached
 - Restores cached versions when available
 - Selects the correct operating system and architecture
+
+---
+
+## get_cache_4d_binaries.yml
+
+Prepares the 4D binaries required by application-build workflows without making every build download and run a full 4D installer. It downloads the selected 4D release on both macOS and Windows, installs its applications, stores them in the GitHub Actions cache, and creates ZIP archives that can optionally be uploaded to an SFTP server.
+
+The workflow prepares three products:
+
+- **4D (Standalone)** — used by later workflows to build standalone and client applications from a 4D Project.
+- **4D Server** — used to build a standalone server application from a 4D Project.
+- **4D Volume Desktop** — the Volume Desktop runtime used when producing standalone or client applications.
+
+Publishing these archives to SFTP provides a platform-independent binary store for other workflows. A build workflow can download the exact prepared binaries from SFTP and immediately build a 4D Project, avoiding the time and complexity of downloading the original installer, mounting or executing it, and installing all three applications for every build.
+
+Typical usage:
+
+```yaml
+jobs:
+  cache-4d-binaries:
+    uses: madamov/4d_actions/.github/workflows/get_cache_4d_binaries.yml@v1
+    with:
+      version: "20.8 HF3"
+      downloader_version: "1.0.0" # Optional; defaults to the latest release.
+      sftp_url: "sftp://files.example.com/4d" # Optional.
+    secrets:
+      PRODUCT_DOWNLOAD_USERNAME: ${{ secrets.PRODUCT_DOWNLOAD_USERNAME }}
+      PRODUCT_DOWNLOAD_PASSWORD: ${{ secrets.PRODUCT_DOWNLOAD_PASSWORD }}
+      DOWNLOADER_TOKEN: ${{ secrets.DOWNLOADER_TOKEN }}
+      SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
+      SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+      SFTP_HOST_FINGERPRINT: ${{ secrets.SFTP_HOST_FINGERPRINT }}
+```
+
+The workflow automatically:
+
+- Runs a macOS and Windows matrix
+- Resolves and installs the appropriate 4D Downloader release
+- Downloads the selected 4D installer from `product-download.4d.com`
+- Installs 4D, 4D Server, and 4D Volume Desktop
+- Caches each installed product separately for later GitHub Actions jobs
+- Creates a ZIP archive for every installed product on both platforms
+- Uploads the archives to SFTP when the complete SFTP configuration is provided
+- Verifies the SFTP server's SSH host key against the supplied SHA-256 fingerprint before uploading
+- Uses Homebrew curl on macOS and discovers an SFTP-capable curl on Windows
+- Adds downloader, installer, and installed-application details to the workflow summary
+- Supports manual execution with `workflow_dispatch`
+
+### Inputs
+
+| Name | Required | Description |
+|------|:--------:|-------------|
+| `version` | ✅ | 4D version to download, install, and cache, such as `20.8 HF3` or `21 R3`. |
+| `downloader_version` | | 4D Downloader release tag. A leading `v` is optional; an empty value selects the latest published release. |
+| `sftp_url` | | SFTP destination directory, such as `sftp://files.example.com/4d`. Leave empty to disable SFTP upload. |
+
+### Secrets
+
+| Name | Required | Description |
+|------|:--------:|-------------|
+| `PRODUCT_DOWNLOAD_USERNAME` | ✅ | Username for `product-download.4d.com`. |
+| `PRODUCT_DOWNLOAD_PASSWORD` | ✅ | Password for `product-download.4d.com`. |
+| `DOWNLOADER_TOKEN` | | Token with read access to the private `madamov/4D-Downloader` repository. When omitted, the workflow uses the caller's `GITHUB_TOKEN`. |
+| `SFTP_USERNAME` | | Username used to upload the ZIP archives to the SFTP server. |
+| `SFTP_PASSWORD` | | Password used to upload the ZIP archives to the SFTP server. |
+| `SFTP_HOST_FINGERPRINT` | | Expected SHA-256 SSH host-key fingerprint, including the `SHA256:` prefix. |
+
+SFTP upload is optional. To enable it, provide `sftp_url` and all three SFTP secrets: `SFTP_USERNAME`, `SFTP_PASSWORD`, and `SFTP_HOST_FINGERPRINT`. If any of these four values is absent, archive upload is skipped. The product-download credentials remain required regardless of whether SFTP upload is enabled.
+
+### Archive names
+
+Archive names contain the normalized 4D version, platform, and product. Dots and spaces in the version are replaced by underscores:
+
+| Product | macOS example | Windows example |
+|---------|---------------|-----------------|
+| 4D (Standalone) | `4d_20_8_HF3_mac.zip` | `4d_20_8_HF3_win.zip` |
+| 4D Server | `4d_20_8_HF3_mac_server.zip` | `4d_20_8_HF3_win_server.zip` |
+| 4D Volume Desktop | `4d_20_8_HF3_mac_vl.zip` | `4d_20_8_HF3_win_vl.zip` |
 
 ---
 
@@ -174,6 +253,7 @@ Additional compiler errors or warnings may also be included.
 |---------|:---------:|:-----------:|:-------:|
 | 20.8 | ✅ | ✅ | ✅ |
 | 20.8 HF3 | ✅ | ✅ | ✅ |
+| 20.8 HF4 | ✅ | ✅ | ✅ |
 | 21.1 | ✅ | ✅ | ✅ |
 | 21 R3 | ✅ | ✅ | ✅ |
 
@@ -195,8 +275,10 @@ The calling repository must contain:
 ```
 .github/
 └── workflows/
+    ├── get_cache_4d_binaries.yml
     ├── get_tool4d.yml
-    └── check_4d_syntax.yml
+    ├── check_4d_syntax.yml
+
 ```
 
 ---

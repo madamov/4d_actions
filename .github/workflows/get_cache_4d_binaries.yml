@@ -1,0 +1,923 @@
+name: Download and cache 4D, 4D Server, 4D VL
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "4D version to download and cache (for example, 20.8 HF4 or 21 R3)"
+        required: true
+        type: string
+      downloader_version:
+        description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
+        required: false
+        type: string
+        default: ""
+      sftp_url:
+        description: "SFTP destination directory URL (for example, sftp://files.example.com/4d)"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      PRODUCT_DOWNLOAD_USERNAME:
+        description: "Username for product-download.4d.com"
+        required: true
+      PRODUCT_DOWNLOAD_PASSWORD:
+        description: "Password for product-download.4d.com"
+        required: true
+      DOWNLOADER_TOKEN:
+        description: "Token with read access to the private madamov/4D-Downloader repository"
+        required: false
+      SFTP_USERNAME:
+        description: "Username for the optional SFTP archive upload"
+        required: false
+      SFTP_PASSWORD:
+        description: "Password for the optional SFTP archive upload"
+        required: false
+      SFTP_HOST_FINGERPRINT:
+        description: "Expected SHA-256 fingerprint of the SFTP server SSH host key"
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "4D version to download and cache (for example, 20.8 HF4 or 21 R3)"
+        required: true
+        type: string
+      downloader_version:
+        description: "4D Downloader release tag (v prefix optional); leave empty to use the latest release"
+        required: false
+        type: string
+        default: ""
+      sftp_url:
+        description: "SFTP destination directory URL (for example, sftp://files.example.com/4d)"
+        required: false
+        type: string
+        default: ""
+
+env:
+  VERSIONS_JSON: |
+    [
+      {"version":"20.8","build":"101985","os":"mac","target":"arm64"},
+      {"version":"20.8","build":"101985","os":"mac","target":"x86_64"},
+      {"version":"20.8","build":"101985","os":"win","target":"x86_64"},
+      {"version":"21.1","build":"100468","os":"win","target":"x86_64"},
+      {"version":"21.1","build":"100468","os":"mac","target":"x86_64"},
+      {"version":"21.1","build":"100468","os":"mac","target":"arm64"},
+      {"version":"20.8 HF3","build":"hotfix","os":"mac","target":"arm64"},
+      {"version":"20.8 HF3","build":"hotfix","os":"mac","target":"x86_64"},
+      {"version":"20.8 HF3","build":"hotfix","os":"win","target":"x86_64"},
+      {"version":"20.8 HF4","build":"hotfix","os":"mac","target":"arm64"},
+      {"version":"20.8 HF4","build":"hotfix","os":"mac","target":"x86_64"},
+      {"version":"20.8 HF4","build":"hotfix","os":"win","target":"x86_64"},
+      {"version":"21 R3","build":"100164","os":"mac","target":"arm64"},
+      {"version":"21 R3","build":"100164","os":"mac","target":"x86_64"},
+      {"version":"21 R3","build":"100164","os":"win","target":"x86_64"}
+    ]
+
+jobs:
+  get-4d-binaries:
+    name: Get 4D binaries (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      PRODUCT_DOWNLOAD_USERNAME: ${{ secrets.PRODUCT_DOWNLOAD_USERNAME }}
+      PRODUCT_DOWNLOAD_PASSWORD: ${{ secrets.PRODUCT_DOWNLOAD_PASSWORD }}
+      FOUR_D_VERSION: ${{ inputs.version }}
+      SFTP_URL: ${{ inputs.sftp_url }}
+      SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
+      SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
+      SFTP_HOST_FINGERPRINT: ${{ secrets.SFTP_HOST_FINGERPRINT }}
+
+    steps:
+      - name: Create 4D Downloader file list
+        id: file-list
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $version = $env:FOUR_D_VERSION.Trim()
+          if (-not $version) {
+            throw 'The version input must not be empty.'
+          }
+
+          if ($env:RUNNER_OS -eq 'macOS') {
+            $platform = 'mac'
+            $platformName = 'Mac'
+            $extension = 'dmg'
+          } elseif ($env:RUNNER_OS -eq 'Windows') {
+            $platform = 'win'
+            $platformName = 'Windows'
+            $extension = 'exe'
+          } else {
+            throw "Unsupported runner operating system: $env:RUNNER_OS"
+          }
+
+          $versionEntry = $env:VERSIONS_JSON |
+            ConvertFrom-Json |
+            Where-Object { $_.version -eq $version -and $_.os -eq $platform } |
+            Select-Object -First 1
+          if (-not $versionEntry) {
+            throw "Version '$version' is not configured for platform '$platform'."
+          }
+
+          if ($version -match '^(?<major>\d+)\.(?<minor>\d+) HF\d+$') {
+            $releaseFamily = "$($Matches.major).x"
+            $build = 'hotfix'
+            $archiveVersion = "$($Matches.major).$($Matches.minor) LTS"
+          } elseif ($version -match '^(?<major>\d+)\.(?<minor>\d+)$') {
+            $releaseFamily = "$($Matches.major).x"
+            $build = [string]$versionEntry.build
+            $archiveVersion = "$version LTS"
+          } elseif ($version -match '^(?<major>\d+) R\d+$') {
+            $releaseFamily = "$($Matches.major) Rx"
+            $build = [string]$versionEntry.build
+            $archiveVersion = $version
+          } else {
+            throw "Unsupported 4D version format: '$version'."
+          }
+
+          $encodedFamily = [uri]::EscapeDataString($releaseFamily)
+          $encodedVersion = [uri]::EscapeDataString($version)
+          $archiveName = "4D $archiveVersion $platformName.$extension"
+          $encodedArchiveName = [uri]::EscapeDataString($archiveName)
+          $url = "https://product-download.4d.com/release/$encodedFamily/$encodedVersion/$build/$platform/$encodedArchiveName"
+          $fileList = ConvertTo-Json -Compress -InputObject @($url)
+          $fileListPath = Join-Path $env:RUNNER_TEMP '4d-downloader-file-list.json'
+          Set-Content -LiteralPath $fileListPath -Value $fileList -Encoding utf8NoBOM
+
+          @(
+            "PRODUCT_DOWNLOAD_URL=$url"
+            "DOWNLOADER_FILE_LIST=$fileList"
+            "DOWNLOADER_FILE_LIST_PATH=$fileListPath"
+            "FOUR_D_INSTALLER_NAME=$archiveName"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          @(
+            "url=$url"
+            "json=$fileList"
+            "path=$fileListPath"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host "Created 4D Downloader file list for $version ($platformName): $fileList"
+
+      - name: Download and install 4D Downloader (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.DOWNLOADER_TOKEN || github.token }}
+          DOWNLOADER_VERSION: ${{ inputs.downloader_version }}
+        run: |
+          set -euo pipefail
+
+          if [[ -n "$DOWNLOADER_VERSION" ]]; then
+            requested_version="$DOWNLOADER_VERSION"
+            if [[ "$requested_version" != v* ]]; then
+              requested_version="v$requested_version"
+            fi
+          else
+            if ! requested_version="$(gh release list --repo madamov/4D-Downloader \
+                --exclude-drafts --exclude-pre-releases --limit 1 \
+                --json tagName --jq '.[0].tagName')"; then
+              echo "::error::Could not access madamov/4D-Downloader. Configure DOWNLOADER_TOKEN with read access to that private repository."
+              exit 1
+            fi
+          fi
+
+          if [[ -z "$requested_version" ]]; then
+            echo "::error::No published 4D Downloader release was found."
+            exit 1
+          fi
+
+          if ! resolved_version="$(gh release view "$requested_version" \
+              --repo madamov/4D-Downloader --json tagName --jq '.tagName')"; then
+            echo "::error::Could not access release $requested_version in madamov/4D-Downloader. Check DOWNLOADER_TOKEN and the release tag."
+            exit 1
+          fi
+
+          runner_arch="${RUNNER_ARCH:-$(uname -m)}"
+          case "$runner_arch" in
+            ARM64|arm64)
+              asset_arch_pattern='(arm|aarch64|silicon)'
+              architecture='Apple Silicon'
+              ;;
+            X64|x86_64)
+              asset_arch_pattern='(intel|x64|x86_64|amd64)'
+              architecture='Intel'
+              ;;
+            *)
+              echo "::error::Unsupported macOS architecture: $runner_arch"
+              exit 1
+              ;;
+          esac
+
+          asset_names="$(gh release view "$resolved_version" \
+            --repo madamov/4D-Downloader --json assets --jq '.assets[].name')"
+          asset_name="$(printf '%s\n' "$asset_names" \
+            | grep -Ei '\.dmg$' \
+            | grep -Ei "$asset_arch_pattern" \
+            | sed -n '1p' || true)"
+          if [[ -z "$asset_name" ]]; then
+            echo "::error::Release $resolved_version does not contain a DMG for $architecture ($runner_arch)."
+            exit 1
+          fi
+
+          download_args=("$resolved_version" --repo madamov/4D-Downloader \
+            --pattern "$asset_name" --dir "$RUNNER_TEMP" --clobber)
+          gh release download "${download_args[@]}"
+
+          dmg_path="$RUNNER_TEMP/$asset_name"
+          if [[ ! -f "$dmg_path" ]]; then
+            echo "::error::The selected DMG was not downloaded to $dmg_path."
+            exit 1
+          fi
+
+          mount_path="$(mktemp -d "$RUNNER_TEMP/4d-downloader.XXXXXX")"
+          trap 'hdiutil detach "$mount_path" -quiet || true' EXIT
+          hdiutil attach "$dmg_path" -nobrowse -readonly -mountpoint "$mount_path" -quiet
+
+          app_path="$(find "$mount_path" -maxdepth 2 -type d -name '4D_Downloader.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo "::error::4D_Downloader.app was not found in the DMG."
+            exit 1
+          fi
+          sudo ditto "$app_path" "/Applications/4D_Downloader.app"
+
+          {
+            echo "DOWNLOADER_RELEASE=$resolved_version"
+            echo "DOWNLOADER_ARCHITECTURE=$architecture"
+            echo "DOWNLOADER_ARCHIVE_PATH=$dmg_path"
+            echo "DOWNLOADER_EXTRACT_PATH=$mount_path"
+            echo "DOWNLOADER_INSTALL_PATH=/Applications/4D_Downloader.app"
+          } >> "$GITHUB_ENV"
+
+      - name: Download and install 4D Downloader (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.DOWNLOADER_TOKEN || github.token }}
+          DOWNLOADER_VERSION: ${{ inputs.downloader_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:DOWNLOADER_VERSION) {
+            $requestedVersion = $env:DOWNLOADER_VERSION.Trim()
+            if (-not $requestedVersion.StartsWith('v')) {
+              $requestedVersion = "v$requestedVersion"
+            }
+          } else {
+            $requestedVersion = & gh release list `
+              --repo 'madamov/4D-Downloader' `
+              --exclude-drafts `
+              --exclude-pre-releases `
+              --limit 1 `
+              --json tagName `
+              --jq '.[0].tagName'
+            if ($LASTEXITCODE -ne 0) {
+              throw "Could not access madamov/4D-Downloader. Configure DOWNLOADER_TOKEN with read access to that private repository."
+            }
+          }
+
+          if (-not $requestedVersion) {
+            throw "No published 4D Downloader release was found."
+          }
+
+          $releaseArgs = @(
+            'release', 'view', $requestedVersion,
+            '--repo', 'madamov/4D-Downloader',
+            '--json', 'tagName',
+            '--jq', '.tagName'
+          )
+          $resolvedVersion = & gh @releaseArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not access release $requestedVersion in madamov/4D-Downloader. Check DOWNLOADER_TOKEN and the release tag."
+          }
+
+          $downloadArgs = @(
+            'release', 'download', $resolvedVersion,
+            '--repo', 'madamov/4D-Downloader',
+            '--pattern', '*.zip',
+            '--dir', $env:RUNNER_TEMP,
+            '--clobber'
+          )
+          & gh @downloadArgs
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not download the requested 4D Downloader release."
+          }
+
+          $zipPath = Get-ChildItem -Path $env:RUNNER_TEMP -Filter '*.zip' -File |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $zipPath) {
+            throw "The selected release does not contain a ZIP asset."
+          }
+
+          $extractPath = Join-Path $env:RUNNER_TEMP '4d-downloader'
+          Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+          $executable = Get-ChildItem -Path $extractPath -Filter '4D_Downloader.exe' -File -Recurse |
+            Select-Object -First 1
+          if (-not $executable) {
+            throw "4D_Downloader.exe was not found in the ZIP archive."
+          }
+
+          $destination = Join-Path $env:ProgramFiles '4D_Downloader'
+          New-Item -Path $destination -ItemType Directory -Force | Out-Null
+          Copy-Item -Path (Join-Path $executable.Directory.FullName '*') `
+            -Destination $destination -Recurse -Force
+
+          @(
+            "DOWNLOADER_RELEASE=$resolvedVersion"
+            "DOWNLOADER_ARCHITECTURE=$env:RUNNER_ARCH"
+            "DOWNLOADER_ARCHIVE_PATH=$zipPath"
+            "DOWNLOADER_EXTRACT_PATH=$extractPath"
+            "DOWNLOADER_INSTALL_PATH=$destination"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Download 4D installer (macOS)
+        id: download-4d-macos
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$PRODUCT_DOWNLOAD_USERNAME" || -z "$PRODUCT_DOWNLOAD_PASSWORD" ]]; then
+            echo "::error::PRODUCT_DOWNLOAD_USERNAME and PRODUCT_DOWNLOAD_PASSWORD must both be configured."
+            exit 1
+          fi
+
+          downloader_path="/Applications/4D_Downloader.app/Contents/MacOS/4D_Downloader"
+          if [[ ! -x "$downloader_path" ]]; then
+            echo "::error::4D Downloader executable was not found at $downloader_path."
+            exit 1
+          fi
+
+          downloads_path="$HOME/Downloads"
+          mkdir -p "$downloads_path"
+
+          "$downloader_path" \
+            -u "$PRODUCT_DOWNLOAD_USERNAME" \
+            -p "$PRODUCT_DOWNLOAD_PASSWORD" \
+            -l "$DOWNLOADER_FILE_LIST"
+
+          installer_path="$downloads_path/$FOUR_D_INSTALLER_NAME"
+          if [[ ! -f "$installer_path" ]]; then
+            echo "::error::4D Downloader completed, but the expected installer was not found at $installer_path."
+            exit 1
+          fi
+
+          installer_size="$(stat -f '%z' "$installer_path")"
+          echo "FOUR_D_INSTALLER_PATH=$installer_path" >> "$GITHUB_ENV"
+          {
+            echo "path=$installer_path"
+            echo "name=$FOUR_D_INSTALLER_NAME"
+            echo "size=$installer_size"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Downloaded '$FOUR_D_INSTALLER_NAME' to '$installer_path' ($installer_size bytes)."
+
+      - name: Download 4D installer (Windows)
+        id: download-4d-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not $env:PRODUCT_DOWNLOAD_USERNAME -or -not $env:PRODUCT_DOWNLOAD_PASSWORD) {
+            throw 'PRODUCT_DOWNLOAD_USERNAME and PRODUCT_DOWNLOAD_PASSWORD must both be configured.'
+          }
+
+          $downloadsPath = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'Downloads'
+          New-Item -Path $downloadsPath -ItemType Directory -Force | Out-Null
+
+          $downloaderPath = Join-Path $env:DOWNLOADER_INSTALL_PATH '4D_Downloader.exe'
+          if (-not (Test-Path -LiteralPath $downloaderPath -PathType Leaf)) {
+            throw "4D Downloader executable was not found at '$downloaderPath'."
+          }
+
+          # Start-Process rebuilds ArgumentList as a Windows command line. Escape
+          # the JSON quotes so they remain literal characters in the -l value.
+          $escapedFileList = $env:DOWNLOADER_FILE_LIST.Replace('"', '\"')
+
+          $arguments = @(
+            '-u', $env:PRODUCT_DOWNLOAD_USERNAME
+            '-p', $env:PRODUCT_DOWNLOAD_PASSWORD
+            '-l', $escapedFileList
+          )
+
+          $process = Start-Process `
+            -FilePath $downloaderPath `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru `
+            -NoNewWindow
+
+          if ($process.ExitCode -ne 0) {
+            throw "4D Downloader exited with code $($process.ExitCode)."
+          }
+
+          $installerPath = Join-Path $downloadsPath $env:FOUR_D_INSTALLER_NAME
+          if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
+            throw "4D Downloader completed, but the expected installer was not found at '$installerPath'."
+          }
+
+          $installer = Get-Item -LiteralPath $installerPath
+          "FOUR_D_INSTALLER_PATH=$($installer.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            "path=$($installer.FullName)"
+            "name=$($installer.Name)"
+            "size=$($installer.Length)"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          Write-Host "Downloaded '$($installer.Name)' to '$($installer.FullName)' ($($installer.Length) bytes)."
+
+      - name: Install 4D applications from DMG
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ ! -f "$FOUR_D_INSTALLER_PATH" ]]; then
+            echo "::error::The downloaded 4D DMG was not found at $FOUR_D_INSTALLER_PATH."
+            exit 1
+          fi
+
+          mount_path="$(mktemp -d "$RUNNER_TEMP/4d-installer.XXXXXX")"
+          detach_dmg() {
+            hdiutil detach "$mount_path" -quiet || true
+            rmdir "$mount_path" 2>/dev/null || true
+          }
+          trap detach_dmg EXIT
+
+          hdiutil attach "$FOUR_D_INSTALLER_PATH" \
+            -nobrowse \
+            -readonly \
+            -mountpoint "$mount_path" \
+            -quiet
+
+          applications=(
+            "4D.app"
+            "4D Server.app"
+            "4D Volume Desktop.app"
+          )
+
+          for application_name in "${applications[@]}"; do
+            source_path="$(find "$mount_path" -maxdepth 4 -type d \
+              -name "$application_name" -print -quit)"
+            if [[ -z "$source_path" ]]; then
+              echo "::error::$application_name was not found in the mounted DMG."
+              exit 1
+            fi
+
+            destination_path="/Applications/$application_name"
+            sudo ditto "$source_path" "$destination_path"
+            if [[ ! -d "$destination_path" ]]; then
+              echo "::error::Failed to install $application_name at $destination_path."
+              exit 1
+            fi
+
+            echo "Installed $application_name at $destination_path."
+          done
+
+          {
+            echo "FOUR_D_APP_PATH=/Applications/4D.app"
+            echo "FOUR_D_SERVER_APP_PATH=/Applications/4D Server.app"
+            echo "FOUR_D_VOLUME_DESKTOP_APP_PATH=/Applications/4D Volume Desktop.app"
+          } >> "$GITHUB_ENV"
+
+      - name: Install 4D applications with Inno Setup
+        id: install-4d-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not (Test-Path -LiteralPath $env:FOUR_D_INSTALLER_PATH -PathType Leaf)) {
+            throw "The downloaded 4D installer was not found at '$env:FOUR_D_INSTALLER_PATH'."
+          }
+
+          $installLog = Join-Path $env:RUNNER_TEMP '4d-inno-install.log'
+          $installRoot = Join-Path $env:RUNNER_TEMP '4d-install'
+          $installerArguments = @(
+            '/VERYSILENT'
+            '/SUPPRESSMSGBOXES'
+            '/NORESTART'
+            '/SP-'
+            "/DIR=$installRoot"
+            "/LOG=$installLog"
+          )
+
+          $process = Start-Process `
+            -FilePath $env:FOUR_D_INSTALLER_PATH `
+            -ArgumentList $installerArguments `
+            -Wait `
+            -PassThru
+          if ($process.ExitCode -notin @(0, 3010)) {
+            if (Test-Path -LiteralPath $installLog) {
+              Write-Host 'Inno Setup log:'
+              Get-Content -LiteralPath $installLog
+            }
+            throw "The 4D installer exited with code $($process.ExitCode)."
+          }
+
+          if (-not (Test-Path -LiteralPath $installRoot -PathType Container)) {
+            throw "The 4D installation directory was not created at '$installRoot'."
+          }
+
+          $applicationFolders = [ordered]@{
+            FOUR_D_APP_PATH = '4D'
+            FOUR_D_SERVER_APP_PATH = '4D Server'
+            FOUR_D_VOLUME_DESKTOP_APP_PATH = '4D Volume Desktop'
+          }
+          $installedPaths = [ordered]@{}
+          foreach ($entry in $applicationFolders.GetEnumerator()) {
+            $applicationPath = Join-Path $installRoot $entry.Value
+            if (-not (Test-Path -LiteralPath $applicationPath -PathType Container)) {
+              $applicationPath = Get-ChildItem -Path $installRoot -Directory -Recurse |
+                Where-Object { $_.Name -eq $entry.Value } |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if (-not $applicationPath) {
+              throw "The '$($entry.Value)' installation folder was not found under '$installRoot'."
+            }
+            $installedPaths[$entry.Key] = $applicationPath
+            Write-Host "Found $($entry.Value) at '$applicationPath'."
+          }
+
+          @(
+            "FOUR_D_INSTALL_ROOT=$installRoot"
+            "FOUR_D_APP_PATH=$($installedPaths.FOUR_D_APP_PATH)"
+            "FOUR_D_SERVER_APP_PATH=$($installedPaths.FOUR_D_SERVER_APP_PATH)"
+            "FOUR_D_VOLUME_DESKTOP_APP_PATH=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            "root=$installRoot"
+            "4d=$($installedPaths.FOUR_D_APP_PATH)"
+            "server=$($installedPaths.FOUR_D_SERVER_APP_PATH)"
+            "volume-desktop=$($installedPaths.FOUR_D_VOLUME_DESKTOP_APP_PATH)"
+          ) | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Cache 4D
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.FOUR_D_APP_PATH }}
+          key: ${{ runner.os }}-4d-${{ inputs.version }}
+
+      - name: Cache 4D Server
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.FOUR_D_SERVER_APP_PATH }}
+          key: ${{ runner.os }}-4d_server-${{ inputs.version }}
+
+      - name: Cache 4D Volume Desktop
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.FOUR_D_VOLUME_DESKTOP_APP_PATH }}
+          key: ${{ runner.os }}-4d_volume_desktop-${{ inputs.version }}
+
+      - name: Create 4D archives (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_version="$(printf '%s' "$FOUR_D_VERSION" | tr '. ' '__')"
+          archive_directory="$RUNNER_TEMP/4d-archives"
+          mkdir -p "$archive_directory"
+
+          four_d_archive="$archive_directory/4d_${archive_version}_mac.zip"
+          server_archive="$archive_directory/4d_${archive_version}_mac_server.zip"
+          volume_desktop_archive="$archive_directory/4d_${archive_version}_mac_vl.zip"
+
+          ditto -c -k --sequesterRsrc --keepParent "$FOUR_D_APP_PATH" "$four_d_archive"
+          ditto -c -k --sequesterRsrc --keepParent "$FOUR_D_SERVER_APP_PATH" "$server_archive"
+          ditto -c -k --sequesterRsrc --keepParent "$FOUR_D_VOLUME_DESKTOP_APP_PATH" "$volume_desktop_archive"
+
+          {
+            echo "FOUR_D_ARCHIVE_PATH=$four_d_archive"
+            echo "FOUR_D_SERVER_ARCHIVE_PATH=$server_archive"
+            echo "FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH=$volume_desktop_archive"
+          } >> "$GITHUB_ENV"
+
+          ls -lh "$four_d_archive" "$server_archive" "$volume_desktop_archive"
+
+      - name: Create 4D archives (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $archiveVersion = $env:FOUR_D_VERSION.Trim() -replace '[. ]', '_'
+          $archiveDirectory = Join-Path $env:RUNNER_TEMP '4d-archives'
+          New-Item -Path $archiveDirectory -ItemType Directory -Force | Out-Null
+
+          $archives = [ordered]@{
+            FOUR_D_ARCHIVE_PATH = @($env:FOUR_D_APP_PATH, "4d_${archiveVersion}_win.zip")
+            FOUR_D_SERVER_ARCHIVE_PATH = @($env:FOUR_D_SERVER_APP_PATH, "4d_${archiveVersion}_win_server.zip")
+            FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH = @($env:FOUR_D_VOLUME_DESKTOP_APP_PATH, "4d_${archiveVersion}_win_vl.zip")
+          }
+
+          foreach ($entry in $archives.GetEnumerator()) {
+            $sourcePath = $entry.Value[0]
+            $archivePath = Join-Path $archiveDirectory $entry.Value[1]
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Container)) {
+              throw "The installed application directory was not found at '$sourcePath'."
+            }
+            Compress-Archive -LiteralPath $sourcePath -DestinationPath $archivePath -CompressionLevel Optimal -Force
+            "$($entry.Key)=$archivePath" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "Created '$archivePath' ($((Get-Item -LiteralPath $archivePath).Length) bytes)."
+          }
+
+      - name: Upload 4D archives to SFTP (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SFTP_URL" || -z "$SFTP_USERNAME" || -z "$SFTP_PASSWORD" || -z "$SFTP_HOST_FINGERPRINT" ]]; then
+            echo "SFTP URL, username, password, and host fingerprint were not all provided; skipping archive upload."
+            exit 0
+          fi
+
+          if [[ "$SFTP_URL" != sftp://* ]]; then
+            echo "::error::sftp_url must start with sftp://."
+            exit 1
+          fi
+
+          authority="${SFTP_URL#sftp://}"
+          authority="${authority%%/*}"
+          host_port="${authority##*@}"
+          sftp_host="$host_port"
+          sftp_port="22"
+          if [[ "$host_port" == *:* ]]; then
+            sftp_host="${host_port%%:*}"
+            sftp_port="${host_port##*:}"
+          fi
+          if [[ -z "$sftp_host" ]]; then
+            echo "::error::Could not extract SFTP hostname."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          scanned_keys="$RUNNER_TEMP/sftp-host-keys"
+          verified_keys="$RUNNER_TEMP/sftp-verified-host-keys"
+          rm -f "$scanned_keys" "$verified_keys"
+          ssh-keyscan -p "$sftp_port" "$sftp_host" > "$scanned_keys"
+          if [[ ! -s "$scanned_keys" ]]; then
+            echo "::error::ssh-keyscan returned no host keys."
+            exit 1
+          fi
+
+          match_found=false
+          while IFS= read -r key_line; do
+            [[ -n "$key_line" ]] || continue
+            [[ "$key_line" == \#* ]] && continue
+            actual_fingerprint="$(
+              printf '%s\n' "$key_line" |
+                ssh-keygen -lf - -E sha256 |
+                awk '{print $2}'
+            )"
+            echo "Found host key fingerprint: $actual_fingerprint"
+            if [[ "$actual_fingerprint" == "$SFTP_HOST_FINGERPRINT" ]]; then
+              printf '%s\n' "$key_line" >> "$verified_keys"
+              match_found=true
+            fi
+          done < "$scanned_keys"
+          if [[ "$match_found" != "true" ]]; then
+            echo "::error::None of the server keys matched the expected SSH host fingerprint."
+            exit 1
+          fi
+
+          cp "$verified_keys" "$HOME/.ssh/known_hosts"
+          ssh-keygen -H -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1
+          rm -f "$HOME/.ssh/known_hosts.old"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "SSH host fingerprint verified successfully."
+
+          curl_path="$(brew --prefix curl)/bin/curl"
+          if [[ ! -x "$curl_path" ]]; then
+            echo "::error::Homebrew curl was not found at $curl_path."
+            exit 1
+          fi
+          if ! "$curl_path" --version | grep -q 'sftp'; then
+            echo "::error::Homebrew curl does not report SFTP protocol support."
+            exit 1
+          fi
+
+          destination="${SFTP_URL%/}"
+          for archive_path in \
+            "$FOUR_D_ARCHIVE_PATH" \
+            "$FOUR_D_SERVER_ARCHIVE_PATH" \
+            "$FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH"; do
+            archive_name="$(basename "$archive_path")"
+            "$curl_path" \
+              --fail --show-error --silent \
+              --ftp-create-dirs \
+              --user "$SFTP_USERNAME:$SFTP_PASSWORD" \
+              --upload-file "$archive_path" \
+              "$destination/$archive_name"
+            echo "Uploaded $archive_name."
+          done
+
+      - name: Upload 4D archives to SFTP (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if (-not $env:SFTP_URL -or -not $env:SFTP_USERNAME -or -not $env:SFTP_PASSWORD -or -not $env:SFTP_HOST_FINGERPRINT) {
+            Write-Host 'SFTP URL, username, password, and host fingerprint were not all provided; skipping archive upload.'
+            exit 0
+          }
+
+          $candidates = @(
+            'C:\Program Files\Git\mingw64\bin\curl.exe'
+            'C:\msys64\usr\bin\curl.exe'
+            'C:\Windows\System32\curl.exe'
+          )
+          $curlPath = $null
+          foreach ($candidate in $candidates) {
+            if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+              Write-Host "Not found: $candidate"
+              continue
+            }
+            Write-Host "Checking: $candidate"
+            $versionOutput = & $candidate --version
+            $curlExitCode = $LASTEXITCODE
+            if ($curlExitCode -ne 0) {
+              Write-Warning "Could not run $candidate"
+              continue
+            }
+            $versionOutput | ForEach-Object { Write-Host $_ }
+            $protocolLine = $versionOutput |
+              Where-Object { $_ -match '^Protocols:' } |
+              Select-Object -First 1
+            if ($protocolLine -match '(^|\s)sftp(\s|$)') {
+              $curlPath = $candidate
+              break
+            }
+            Write-Host 'This curl does not support SFTP.'
+          }
+          if (-not $curlPath) {
+            throw 'No installed curl executable supports SFTP.'
+          }
+          Write-Host "Selected SFTP-capable curl: $curlPath"
+
+          if (-not $env:SFTP_URL.StartsWith('sftp://')) {
+            throw 'sftp_url must start with sftp://.'
+          }
+          $uri = [System.Uri]$env:SFTP_URL
+          $sftpHost = $uri.Host
+          if ([string]::IsNullOrWhiteSpace($sftpHost)) {
+            throw 'Could not extract SFTP hostname.'
+          }
+          $sftpPort = $uri.Port
+          if ($sftpPort -le 0) {
+            $sftpPort = 22
+          }
+
+          $gitSshDirectory = 'C:\Program Files\Git\usr\bin'
+          $sshKeyscanCandidates = @(
+            (Join-Path $gitSshDirectory 'ssh-keyscan.exe')
+            'C:\Windows\System32\OpenSSH\ssh-keyscan.exe'
+          )
+          $sshKeygenCandidates = @(
+            (Join-Path $gitSshDirectory 'ssh-keygen.exe')
+            'C:\Windows\System32\OpenSSH\ssh-keygen.exe'
+          )
+          $sshKeyscan = $sshKeyscanCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          $sshKeygen = $sshKeygenCandidates |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($sshKeyscan)) {
+            throw 'Could not locate ssh-keyscan.exe.'
+          }
+          if ([string]::IsNullOrWhiteSpace($sshKeygen)) {
+            throw 'Could not locate ssh-keygen.exe.'
+          }
+
+          $scannedKeysFile = Join-Path $env:RUNNER_TEMP 'sftp-host-keys'
+          $verifiedKeysFile = Join-Path $env:RUNNER_TEMP 'sftp-verified-host-keys'
+          Remove-Item $scannedKeysFile, $verifiedKeysFile -Force -ErrorAction SilentlyContinue
+          Write-Host "Using ssh-keygen: $sshKeygen"
+
+          $keyscanExitCode = $null
+          foreach ($keyscanCandidate in $sshKeyscanCandidates) {
+            if (-not (Test-Path -LiteralPath $keyscanCandidate -PathType Leaf)) {
+              continue
+            }
+            Remove-Item $scannedKeysFile -Force -ErrorAction SilentlyContinue
+            Write-Host "Using ssh-keyscan: $keyscanCandidate"
+            & $keyscanCandidate -p $sftpPort $sftpHost |
+              Out-File -FilePath $scannedKeysFile -Encoding ascii
+            $keyscanExitCode = $LASTEXITCODE
+            if ((Test-Path $scannedKeysFile) -and (Get-Item $scannedKeysFile).Length -gt 0) {
+              $sshKeyscan = $keyscanCandidate
+              break
+            }
+            Write-Warning "No host keys were returned by $keyscanCandidate (exit code $keyscanExitCode)."
+          }
+          if (-not (Test-Path $scannedKeysFile) -or (Get-Item $scannedKeysFile).Length -eq 0) {
+            throw 'No installed ssh-keyscan executable returned SSH host keys.'
+          }
+          if ($keyscanExitCode -ne 0) {
+            Write-Warning "ssh-keyscan exited with code $keyscanExitCode but returned host keys; continuing with fingerprint verification."
+          }
+
+          $matchingKeys = @()
+          foreach ($keyLine in Get-Content $scannedKeysFile) {
+            if ([string]::IsNullOrWhiteSpace($keyLine) -or $keyLine.StartsWith('#')) {
+              continue
+            }
+            $temporaryKey = Join-Path $env:RUNNER_TEMP 'sftp-single-host-key'
+            Set-Content -Path $temporaryKey -Value $keyLine -Encoding ascii
+            $fingerprintOutput = & $sshKeygen -lf $temporaryKey -E sha256
+            if ($LASTEXITCODE -ne 0) {
+              continue
+            }
+            if ($fingerprintOutput -match 'SHA256:[^\s]+') {
+              $actualFingerprint = $Matches[0]
+              Write-Host "Found host key fingerprint: $actualFingerprint"
+              if ($actualFingerprint -eq $env:SFTP_HOST_FINGERPRINT) {
+                $matchingKeys += $keyLine
+              }
+            }
+          }
+          if ($matchingKeys.Count -eq 0) {
+            throw 'None of the server keys matched the expected SSH host fingerprint.'
+          }
+
+          $sshDirectory = Join-Path $HOME '.ssh'
+          $knownHosts = Join-Path $sshDirectory 'known_hosts'
+          New-Item -ItemType Directory -Path $sshDirectory -Force | Out-Null
+          $matchingKeys | Out-File -FilePath $knownHosts -Encoding ascii
+          & $sshKeygen -H -f $knownHosts | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to hash the verified known_hosts file.'
+          }
+          Remove-Item "$knownHosts.old" -Force -ErrorAction SilentlyContinue
+          Write-Host 'SSH host fingerprint verified successfully.'
+
+          $destination = $env:SFTP_URL.TrimEnd('/')
+          $credentials = "$($env:SFTP_USERNAME):$($env:SFTP_PASSWORD)"
+          $archivePaths = @(
+            $env:FOUR_D_ARCHIVE_PATH
+            $env:FOUR_D_SERVER_ARCHIVE_PATH
+            $env:FOUR_D_VOLUME_DESKTOP_ARCHIVE_PATH
+          )
+          foreach ($archivePath in $archivePaths) {
+            $archiveName = Split-Path -Leaf $archivePath
+            $escapedArchiveName = [System.Uri]::EscapeDataString($archiveName)
+            $remoteUrl = "$destination/$escapedArchiveName"
+            & $curlPath `
+              --fail --show-error --silent `
+              --ftp-create-dirs `
+              --user $credentials `
+              --upload-file $archivePath `
+              $remoteUrl
+            $curlExitCode = $LASTEXITCODE
+
+            if ($curlExitCode -eq 78) {
+              Write-Warning "The initial upload could not create or open the remote path. Retrying without --ftp-create-dirs in case another matrix job created it concurrently."
+              Start-Sleep -Seconds 2
+              & $curlPath `
+                --fail --show-error --silent `
+                --user $credentials `
+                --upload-file $archivePath `
+                $remoteUrl
+              $curlExitCode = $LASTEXITCODE
+            }
+
+            if ($curlExitCode -ne 0) {
+              throw "SFTP upload failed for '$archiveName' with curl exit code $curlExitCode. Verify that the remote directory exists and that the SFTP account can create files in it."
+            }
+            Write-Host "Uploaded $archiveName."
+          }
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo "## 4D Downloader"
+            echo
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Version | \`$DOWNLOADER_RELEASE\` |"
+            echo "| Requested 4D version | \`$FOUR_D_VERSION\` |"
+            echo "| Product URL | \`$PRODUCT_DOWNLOAD_URL\` |"
+            echo "| File list | \`$DOWNLOADER_FILE_LIST_PATH\` |"
+            echo "| 4D installer | \`$FOUR_D_INSTALLER_PATH\` |"
+            echo "| 4D | \`$FOUR_D_APP_PATH\` |"
+            echo "| 4D Server | \`$FOUR_D_SERVER_APP_PATH\` |"
+            echo "| 4D Volume Desktop | \`$FOUR_D_VOLUME_DESKTOP_APP_PATH\` |"
+            echo "| Architecture | \`$DOWNLOADER_ARCHITECTURE\` |"
+            echo "| Downloaded to | \`$DOWNLOADER_ARCHIVE_PATH\` |"
+            echo "| Extracted to | \`$DOWNLOADER_EXTRACT_PATH\` |"
+            echo "| Installed to | \`$DOWNLOADER_INSTALL_PATH\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
