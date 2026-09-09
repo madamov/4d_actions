@@ -110,7 +110,6 @@ jobs:
     secrets:
       PRODUCT_DOWNLOAD_USERNAME: ${{ secrets.PRODUCT_DOWNLOAD_USERNAME }}
       PRODUCT_DOWNLOAD_PASSWORD: ${{ secrets.PRODUCT_DOWNLOAD_PASSWORD }}
-      DOWNLOADER_TOKEN: ${{ secrets.DOWNLOADER_TOKEN }}
       SFTP_USERNAME: ${{ secrets.SFTP_USERNAME }}
       SFTP_PASSWORD: ${{ secrets.SFTP_PASSWORD }}
       SFTP_HOST_FINGERPRINT: ${{ secrets.SFTP_HOST_FINGERPRINT }}
@@ -144,7 +143,6 @@ The workflow automatically:
 |------|:--------:|-------------|
 | `PRODUCT_DOWNLOAD_USERNAME` | ✅ | Username for `product-download.4d.com`. |
 | `PRODUCT_DOWNLOAD_PASSWORD` | ✅ | Password for `product-download.4d.com`. |
-| `DOWNLOADER_TOKEN` | | Token with read access to the private `madamov/4D-Downloader` repository. When omitted, the workflow uses the caller's `GITHUB_TOKEN`. |
 | `SFTP_USERNAME` | | Username used to upload the ZIP archives to the SFTP server. |
 | `SFTP_PASSWORD` | | Password used to upload the ZIP archives to the SFTP server. |
 | `SFTP_HOST_FINGERPRINT` | | Expected SHA-256 SSH host-key fingerprint, including the `SHA256:` prefix. |
