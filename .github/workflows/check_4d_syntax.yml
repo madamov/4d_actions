@@ -542,6 +542,14 @@ jobs:
             echo "error_file=$ERROR_FILE"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Upload syntax-check result
+        if: always() && steps.run-tool4d.outputs.error_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: Check-Syntax-Results
+          path: ${{ steps.run-tool4d.outputs.error_file }}
+          if-no-files-found: warn
+
       - name: Add result to job summary
         if: always()
         shell: bash
