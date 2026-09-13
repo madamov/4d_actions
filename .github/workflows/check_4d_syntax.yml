@@ -47,7 +47,7 @@ jobs:
 
     steps:
       - name: Checkout calling repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Locate 4D project and determine tool4d cache key
         id: resolve
