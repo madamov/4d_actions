@@ -3,6 +3,11 @@ name: Check 4D project syntax
 on:
   workflow_call:
     inputs:
+      version:
+        description: "tool4d version, for example: 21.1, 20.8 HF3, or 21 R3"
+        required: true
+        type: string
+
       startup_method:
         description: "4D startup method used to check syntax"
         required: true
@@ -48,6 +53,7 @@ jobs:
         id: resolve
         shell: bash
         env:
+          TOOL4D_VERSION: ${{ inputs.version }}
           VERSIONS_JSON: |
             [
               {"version":"20.8","build":"101985","os":"mac","target":"arm64"},
@@ -103,25 +109,6 @@ jobs:
 
           PROJECT_FILE_UNIX="${PROJECT_FILES[0]}"
 
-          COMPATIBILITY_VERSION="$(
-            jq -er '.compatibilityVersion' "$PROJECT_FILE_UNIX"
-          )"
-
-          if ! [[ "$COMPATIBILITY_VERSION" =~ ^[0-9]+$ ]]; then
-            echo "::error::compatibilityVersion must be numeric."
-            echo "::error::Found: $COMPATIBILITY_VERSION"
-            exit 1
-          fi
-
-          if [[ "$COMPATIBILITY_VERSION" -lt 100 ]]; then
-            echo "::error::Unexpected compatibilityVersion: $COMPATIBILITY_VERSION"
-            exit 1
-          fi
-
-          VERSION_MAJOR=$((COMPATIBILITY_VERSION / 100))
-          VERSION_MINOR=$((COMPATIBILITY_VERSION % 100))
-          TOOL4D_VERSION="${VERSION_MAJOR}.${VERSION_MINOR}"
-          
           # Determine the tool4d operating system and architecture before
           # searching VERSIONS_JSON.
           case "$RUNNER_OS" in
@@ -196,7 +183,9 @@ jobs:
           
           TOOL4D_BUILD="$(jq -r '.build' <<< "$SELECTED_ENTRY")"
           
-          URL="https://product-download.4d.com/release/${VERSION_MAJOR}.x/${TOOL4D_VERSION}/${TOOL4D_BUILD}/${TOOL4D_OS}/${TOOL4D_ARCHIVE}"
+          VERSION_MAJOR="${TOOL4D_VERSION%%[. ]*}"
+          VERSION_PATH="${TOOL4D_VERSION// /%20}"
+          URL="https://product-download.4d.com/release/${VERSION_MAJOR}.x/${VERSION_PATH}/${TOOL4D_BUILD}/${TOOL4D_OS}/${TOOL4D_ARCHIVE}"
           
           CACHE_KEY="tool4d-${TOOL4D_VERSION}-${TOOL4D_OS}-${TOOL4D_TARGET}"
           INSTALL_PATH="${RUNNER_TOOL_CACHE}/${CACHE_KEY}"
@@ -208,7 +197,6 @@ jobs:
           fi
 
           echo "4D project          : $PROJECT_FILE"
-          echo "compatibilityVersion: $COMPATIBILITY_VERSION"
           echo "tool4d version      : $TOOL4D_VERSION"
           echo "tool4d build        : $TOOL4D_BUILD"
           echo "Download archive    : $TOOL4D_ARCHIVE"
@@ -219,7 +207,6 @@ jobs:
           {
             echo "project_file=$PROJECT_FILE"
             echo "project_file_unix=$PROJECT_FILE_UNIX"
-            echo "compatibility_version=$COMPATIBILITY_VERSION"
             echo "tool4d_version=$TOOL4D_VERSION"
             echo "tool4d_build=$TOOL4D_BUILD"
             echo "archive=$TOOL4D_ARCHIVE"
@@ -557,7 +544,6 @@ jobs:
         env:
           PROJECT_FILE: ${{ steps.resolve.outputs.project_file }}
           TOOL4D_VERSION: ${{ steps.resolve.outputs.tool4d_version }}
-          COMPATIBILITY_VERSION: ${{ steps.resolve.outputs.compatibility_version }}
           CACHE_KEY: ${{ steps.resolve.outputs.cache_key }}
           STARTUP_METHOD: ${{ inputs.startup_method }}
         run: |
@@ -567,7 +553,6 @@ jobs:
             echo "| Property | Value |"
             echo "|---|---|"
             echo "| Project | \`$PROJECT_FILE\` |"
-            echo "| compatibilityVersion | \`$COMPATIBILITY_VERSION\` |"
             echo "| tool4d version | \`$TOOL4D_VERSION\` |"
             echo "| Startup method | \`$STARTUP_METHOD\` |"
             echo "| Cache key | \`$CACHE_KEY\` |"

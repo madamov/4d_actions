@@ -21,6 +21,7 @@ jobs:
   syntax:
     uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     with:
+      version: "21.1"
       startup_method: checkSyntax
       runner: windows-latest  
       user_parameters: |
@@ -36,6 +37,7 @@ jobs:
   syntax:
     uses: madamov/4d_actions/.github/workflows/check_4d_syntax.yml@v1
     with:
+      version: "21.1"
       startup_method: checkSyntax
       runner: windows-latest
       user_parameters: |
@@ -171,17 +173,17 @@ The workflow automatically:
 
 1. Checks out the caller repository.
 2. Locates the `.4DProject`.
-3. Reads the project's `compatibilityVersion`.
-4. Determines the required tool4d version.
-5. Restores or downloads tool4d.
-6. Executes the specified startup method.
-7. Reads the generated result JSON.
-8. Returns outputs to the caller.
+3. Selects the tool4d version supplied through the `version` input.
+4. Restores or downloads tool4d.
+5. Executes the specified startup method.
+6. Reads the generated result JSON.
+7. Returns outputs to the caller.
 
 ### Inputs
 
 | Name | Required | Description |
 |------|:--------:|-------------|
+| `version` | ✅ | tool4d version to use, such as `21.1`, `20.8 HF3`, or `21 R3` |
 | `startup_method` | ✅ | Name of the 4D startup method to execute |
 | `user_parameters` | ✅ | JSON passed to `--user-param` |
 | `runner` | | Runner to execute on (default: `macos-latest`) |
@@ -264,7 +266,6 @@ Additional compiler errors or warnings may also be included.
 The calling repository must contain:
 
 - Exactly one `.4DProject`
-- A valid `compatibilityVersion`
 - The requested startup method
 - A startup method that generates the expected JSON result
 
