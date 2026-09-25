@@ -73,9 +73,15 @@ jobs:
 
           VERSIONS_JSON: |
             [
+              {"version":"20.9","build":"102090","os":"mac","target":"arm64"},
+              {"version":"20.9","build":"102090","os":"mac","target":"x86_64"},
+              {"version":"20.9","build":"102090","os":"win","target":"x86_64"},
               {"version":"20.8","build":"101985","os":"mac","target":"arm64"},
               {"version":"20.8","build":"101985","os":"mac","target":"x86_64"},
               {"version":"20.8","build":"101985","os":"win","target":"x86_64"},
+              {"version":"21.2","build":"100600","os":"win","target":"x86_64"},
+              {"version":"21.2","build":"100600","os":"mac","target":"x86_64"},
+              {"version":"21.2","build":"100600","os":"mac","target":"arm64"},
               {"version":"21.1","build":"100468","os":"win","target":"x86_64"},
               {"version":"21.1","build":"100468","os":"mac","target":"x86_64"},
               {"version":"21.1","build":"100468","os":"mac","target":"arm64"},
