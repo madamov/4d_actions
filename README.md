@@ -251,13 +251,19 @@ Additional compiler errors or warnings may also be included.
 
 # Supported 4D Versions
 
+The following versions are configured in `get_tool4d.yml` and `get_cache_4d_binaries.yml`:
+
 | Version | macOS ARM | macOS Intel | Windows |
 |---------|:---------:|:-----------:|:-------:|
 | 20.8 | ✅ | ✅ | ✅ |
 | 20.8 HF3 | ✅ | ✅ | ✅ |
 | 20.8 HF4 | ✅ | ✅ | ✅ |
+| 20.9 | ✅ | ✅ | ✅ |
 | 21.1 | ✅ | ✅ | ✅ |
+| 21.2 | ✅ | ✅ | ✅ |
 | 21 R3 | ✅ | ✅ | ✅ |
+
+`check_4d_syntax.yml` currently supports `20.8`, `20.8 HF3`, `21.1`, and `21 R3`. Its version list does not yet include `20.8 HF4`, `20.9`, or `21.2`.
 
 ---
 
